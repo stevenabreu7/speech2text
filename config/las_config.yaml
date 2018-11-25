@@ -1,0 +1,17 @@
+meta_params:
+  log_folder: 'log/'
+  model_name: 'las_basic'
+
+training_params:
+  tf_rate: 0.9
+  n_epochs: 20
+  max_label_len: 77
+  learning_rate: 0.0001
+
+model_params:
+  N: 40
+  H: 256
+  C: 34
+  K: 512
+  P: 128
+  max_label_len: 77
