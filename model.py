@@ -192,6 +192,10 @@ class Speller(nn.Module):
                 B x U x K
             y:  ground truth
                 B x T
+          Returns:
+            pred_seq_raw:       raw sequence that is predicted
+                                list of tensors of size B x C
+            attention_record:   attention record of the network TODO
         """
         # determine if we force the teacher or not
         if y is None:

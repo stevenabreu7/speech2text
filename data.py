@@ -43,7 +43,9 @@ class WSJDataset(Dataset):
 def collate_lines(l):
     """
       Called by the data loader when collating lines. 
-      Pad the sequences with zeros to turn them into a 3D tensor.
+      Pad the sequences with zeros to turn them into a 3D tensor with 
+      the second dimension representing the time (i.e. the length of
+      the sequence). This is ensured to be divisible by eight.
     """
     x, y = zip(*l)
     x, y = list(x), list(y)
@@ -58,11 +60,39 @@ def collate_lines(l):
     return x, y
 
 def train_loader():
-    train_dataset = WSJDataset('data', 'train', sorting=True)
+    """
+      Loads the training data (letter wise). 
+      Returns:
+        DataLoader object that yields pairs of data and labels.
+        Data:
+            Tensor of size B x L x N
+            B is the batch size, here B=64
+            L is the length of the sequence, variable
+            N is the number of features, here N=40
+        Labels:
+            Tensors of size B x T
+            B is the batch size, here B=64
+            T is the length of the label, variable
+    """
+    train_dataset = WSJDataset('data', 'train', 'l', sorting=True)
     train_loader = DataLoader(train_dataset, batch_size=64, shuffle=False, collate_fn=collate_lines)
     return train_loader
 
 def val_loader():
+    """
+      Loads the validation data (letter wise).
+      Returns:
+        DataLoader object that yields pairs of data and labels.
+        Data:
+            Tensor of size B x L x N
+            B is the batch size, here B=64
+            L is the length of the sequence, variable
+            N is the number of features, here N=40
+        Labels:
+            Tensors of size B x T
+            B is the batch size, here B=64
+            T is the length of the label, variable
+    """
     val_dataset = WSJDataset('data', 'dev', 'l', sorting=True)
     val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False, collate_fn=collate_lines)
     return val_loader
