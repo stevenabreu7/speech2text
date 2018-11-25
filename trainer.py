@@ -149,16 +149,16 @@ class Trainer():
                 
                 # if (idx+1) % 10 == 0 and idx != 0:
                 if self.logging:
-                    print('Epoch {:02}\tBatch {:03}/{:03}\tLoss {:7.3f}\tDur {:5.3f}'.format(epoch_i+1, idx+1, n_batches, batch_loss, batch_end - batch_start), end='\r', flush=True)
+                    print('\rEpoch {:02}\tBatch {:03}/{:03}\tLoss {:7.3f}\tDur {:5.3f}'.format(epoch_i+1, idx+1, n_batches, batch_loss, batch_end - batch_start), end='', flush=True)
 
                 # log this batch loss to tensorboard
                 self.log_writer.add_scalars('loss', {'train': batch_loss}, n_batches * epoch_i + idx)
             
             if self.logging:
-                print('Epoch {:02} completed in {:5.3f}s'.format(epoch_i, time.time() - epoch_start))
+                print('\rEpoch {:02} completed in {:5.3f}s'.format(epoch_i, time.time() - epoch_start))
             
             # save the current model
-            self.save()
+            self.save(epoch_i)
     
     def save(self, add):
         """
