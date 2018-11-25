@@ -137,6 +137,10 @@ class Trainer():
                 if self.debug:
                     print(batch_data.size())
                     print(batch_label.size())
+                
+                # TODO fix memory error
+                if idx > 285:
+                    break
 
                 # start stopwatch for the next iteration
                 batch_start = time.time()
