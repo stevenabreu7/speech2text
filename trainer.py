@@ -142,7 +142,7 @@ class Trainer():
                 batch_start = time.time()
 
                 # forward and backward pass for this batch
-                batch_loss = self.train_batch(batch_data, batch_label, debug)
+                batch_loss = self.train_batch(batch_data, batch_label)
 
                 # end stop watch for iteration
                 batch_end = time.time()
