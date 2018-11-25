@@ -255,7 +255,7 @@ class Speller(nn.Module):
 
             # concatenate the features from the output with the context
             # B x K and B x K -> B x 2*K
-            concat_feature = torch.cat([rnn_output.squeeze(dim=1),context],dim=-1)
+            concat_feature = torch.cat([rnn_output.squeeze(dim=1), context], dim=-1)
             
             # raw prediction (through MLP), tensor of size B x C
             # input of shape B x 2*K
