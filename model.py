@@ -261,7 +261,9 @@ class Speller(nn.Module):
 
             # initialize time target to first target value 
             # tensor of size (BS), values in [0, VOC-1]
-            y_t = y[:, t]
+            y_t = y[:, t].type(LongTensor)
+            if torch.cuda.is_available():
+                y_t = y_t.cuda()
 
             # get embedding, (BS, EMB)
             embedding = self.embedding(y_t)
