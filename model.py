@@ -1,3 +1,4 @@
+import os
 import data
 import time
 import yaml
@@ -12,6 +13,8 @@ from torch.distributions.categorical import Categorical
 """
 TODO:
   implement custom packed sequences
+  implement loss function properly
+  teacher forcing
 
 Dimensions:
   BS:  BATCH_SIZE
@@ -153,7 +156,6 @@ class Attention(nn.Module):
             mask:   tensor for the mask (true lengths) of size (BS, RAL)
           Output:
             c:      context tensor of size (BS, CS)
-            a:      TODO attention score, list of one tensor of size (BS, RAL)
         """
 
         # query, make it size (BS, CS, 1)
@@ -185,8 +187,6 @@ class Attention(nn.Module):
         attention = attention.squeeze(1)
 
         return context
-        # TODO
-        # return context, attention
 
 
 class Speller(nn.Module):
@@ -388,7 +388,7 @@ class ListenAttendSpell(nn.Module):
         # return predictions of size (BS, LAL, VOC)
         return pred
     
-    def train_batch(self, x, y):
+    def train_batch(self, x, y, train=True):
         """
           Train this batch and return the loss
           Params:
@@ -443,6 +443,8 @@ class ListenAttendSpell(nn.Module):
         # use the speller to make the predictions
         # pred of size (BS, LAL, VOC)
         pred = self.speller(key, val, y, mask)
+        # pred of size (BS, VOC, LAL)
+        pred = pred.permute(0, 2, 1)
 
         # get the true prediction
         y = y.data.contiguous()
@@ -453,18 +455,20 @@ class ListenAttendSpell(nn.Module):
         criterion = criterion.cuda() if self.use_gpu else criterion
 
         # compute the loss
+        # pred: (BS, VOC, LAL)
+        # y: (BS, LAL)
         loss = criterion(pred, y)
 
         # backward pass
-        loss.backward()
-        self.optimizer.step()
-        batch_loss = loss.cpu().item()
+        if train:
+            loss.backward()
+            self.optimizer.step()
 
         # free up GPU?
         mask = mask.cpu()
         del mask
 
-        return batch_loss
+        return loss.cpu().item()
     
     def train(self, config_path):
         """
@@ -499,12 +503,14 @@ class ListenAttendSpell(nn.Module):
         # run the epochs
         #
         for epoch_i in range(self.n_epochs):
+            
+            # TRAINING
 
             n_batches = len(self.train_loader)
             epoch_start = time.time()
             batch_start = None
+            losses = []
 
-            # Training
             for idx, (batch_data, batch_label) in enumerate(self.train_loader):
 
                 # start stopwatch for the next iteration
@@ -512,14 +518,47 @@ class ListenAttendSpell(nn.Module):
 
                 # forward and backward pass for this batch
                 batch_loss = self.train_batch(batch_data, batch_label)
+                losses.append(batch_loss)
 
                 # end stop watch for iteration
                 batch_end = time.time()
                 
-                print('\rEpoch {:02}\tBatch {:03}/{:03}\tLoss {:7.3f}\tDur {:5.3f}'.format(epoch_i+1, idx+1, n_batches, batch_loss, batch_end - batch_start), end='', flush=True)
+                print('\r[TRAIN] Epoch {:02}\tBatch {:03}/{:03}\tLoss {:7.3f}\tPerpl {:7.3f}\tDur {:5.3f}'.format(epoch_i+1, idx+1, n_batches, batch_loss, 2**batch_loss, batch_end - batch_start), end='', flush=True)
             
-            print('\rEpoch {:02} completed in {:5.3f}s'.format(epoch_i, time.time() - epoch_start))
+            with open('{}_train_loss_{}.txt', 'w') as f:
+                f.write('\n'.join([str(l) for l in losses]))
             
+            avg_loss = sum(losses) / len(losses)
+            
+            print('\nEpoch {:02} completed in {:5.3f}s. Avg loss {:7.3f}'.format(epoch_i, time.time() - epoch_start, avg_loss))
+
+            # VALIDATION
+
+            n_batches = len(self.val_loader)
+            epoch_start = time.time()
+            batch_start = None
+            losses = []
+
+            for idx, (batch_data, batch_label) in enumerate(self.val_loader):
+                # start stopwatch for the next iteration
+                batch_start = time.time()
+
+                # forward and backward pass for this batch
+                batch_loss = self.train_batch(batch_data, batch_label, train=False)
+                losses.append(batch_loss)
+
+                # end stop watch for iteration
+                batch_end = time.time()
+                
+                print('\r[VAL] Epoch {:02}\tBatch {:03}/{:03}\tLoss {:7.3f}\tPerpl {:7.3f}\tDur {:5.3f}'.format(epoch_i+1, idx+1, n_batches, batch_loss, 2**batch_loss, batch_end - batch_start), end='', flush=True)
+
+            with open('{}_val_loss_{}.txt', 'w') as f:
+                f.write('\n'.join([str(l) for l in losses]))
+            
+            avg_loss = sum(losses) / len(losses)
+            
+            print('\nEpoch {:02} completed in {:5.3f}s. Avg loss {:7.3f}'.format(epoch_i, time.time() - epoch_start, avg_loss))
+
             self.save(epoch_i)
     
     def save(self, add):
