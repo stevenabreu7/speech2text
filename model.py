@@ -172,8 +172,12 @@ class Attention(nn.Module):
         # TODO does this work without masking it?
         attention = F.softmax(energy, dim=1)
 
+        # make sure mask is correct type
+        mask = mask.type(torch.FloatTensor)
+        mask = mask.cuda() if torch.cuda.is_available() else mask
+
         # multiply the mask with the attention, element-wise
-        attention = attention * mask.type(torch.FloatTensor)
+        attention = attention * mask
         # normalize the attention
         attention = attention / attention.sum(dim=1, keepdim=True)
 
