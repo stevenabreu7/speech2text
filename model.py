@@ -261,7 +261,7 @@ class Speller(nn.Module):
 
             # initialize time target to first target value 
             # tensor of size (BS), values in [0, VOC-1]
-            y_t = y[:, t].type(LongTensor)
+            y_t = y[:, t].type(torch.LongTensor)
             if torch.cuda.is_available():
                 y_t = y_t.cuda()
 
