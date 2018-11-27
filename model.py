@@ -171,7 +171,7 @@ class Attention(nn.Module):
         attention = F.softmax(energy, dim=1)
 
         # multiply the mask with the attention, element-wise
-        attention = attention * mask
+        attention = attention * mask.type(torch.FloatTensor)
         # normalize the attention
         attention = attention / attention.sum(dim=1, keepdim=True)
 
