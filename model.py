@@ -1,318 +1,557 @@
+import data
+import time
+import yaml
 import torch
 import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
+from torch.nn.utils.rnn import pad_sequence
 from torch.distributions.categorical import Categorical
 
 """
+TODO:
+  implement custom packed sequences
+
 Dimensions:
-- B:    batch size
-- N:    number of features
-- H:    number of hidden features in the listener
-- K:    number of input faetures for the preprocessing MLP
-            (enconder state and listener features)
-        number of hidden features in the speller
-        K = 2*H
-- L:    number of time steps
-- U:    number of time steps after pooling with the pbLSTM
-        U = L / 2^n, where n is the number of bLSTMs in the listener
-- P:    number of features for attention (after the preprocessing MLP)
-            (encoder state and listener features)
-- C:    number of output classes
-- T:    number of characters in the label/result
+  BS:  BATCH_SIZE
+    batch size.
+  AUF: AUDIO_FEATURES
+    number of audio features in the input.
+  HFL: HIDDEN_FEATURES_LISTENER
+    number of hidden units in the listener.
+  AUL: AUDIO_LENGTH
+    length of the input audio sequence batch.
+  RAL: REDUCED_AUDIO_LENGTH
+    length of the input audio sequence after the pBLSTM.
+  CS:  CONTEXT_SIZE
+    context size for the listener output and speller output.
+  LAL: LABEL_LENGTH
+    length of the text sequence that is our target.
+  VOC: VOCAB_SIZE
+    number of different words/characters in the vocabulary.
 """
 
+class Symbols:
+    SOS = 32
+    EOS = 33
+
+
 class pBLSTMLayer(nn.Module):
-    def __init__(self, N, H):
+    def __init__(self, AUF, HFL):
         """
-          N: number of features for each time step
-          H: number of features in the LSTM (will be multiplied by two because it's bidirectional)
+          AUF:  number of features for each time step
+          HFL:  number of hidden units in the LSTM 
+                output of LSTM will have 2*HFL features because 
+                it's a bidirectional LSTM
         """
         super(pBLSTMLayer, self).__init__()
         # bidirectional LSTM with one layer
-        self.blstm = nn.LSTM(N*2, H, 1, bidirectional=True, batch_first=True)
+        self.blstm = nn.LSTM(AUF*2, HFL, 1, bidirectional=True, batch_first=True)
 
-    def forward(self, x):
+    def forward(self, x, true_lens):
         """
           Forward pass through the pBLSTM layer. Pooling done before forward pass.
-          Input size:
-            B x L x N
+          Assumptions:
+            We assume that the input tensor is of a length divisible by two.
+          Params:
+            x:          input tensor of size (BS, AUL, AUF)
+            true_lens:  list of length BS with true length of each tensor in batch
           Resized input size:
-            B x L/2 x 2*N
-          Output size:
-            B x L/2 x 2*H
+            (BS, AUL/2, 2*AUF)
+          Returns: 
+            x:          output tensor of size (BS, AUL/2, 2*HFL)
+            true_lens:  list of length BS with updated lengths of each tensor in batch
         """
         # extract the dimensions
-        B, L, N = x.size()
+        BS, AUL, AUF = x.size()
+        # make sure input tensor length is divisible by two
+        assert AUL % 2 == 0
         # resize the input vector according to the pooling
-        x = x.contiguous().view(B, L // 2, 2*N)
+        x = x.contiguous().view(BS, AUL // 2, 2*AUF)
+        # update the true lengths
+        true_lens = [e // 2 for e in true_lens]
         # bidirectional lstm
-        return self.blstm(x)
+        x, _ = self.blstm(x)
+        return x, true_lens
+
 
 class Listener(nn.Module):
-    def __init__(self, N, H):
+    def __init__(self, AUF, HFL, CS, n_lay=3):
         """
           Parameters:
-            N:  number of features for each time step
-            H:  number of features in the LSTM (will be multiplied by two
-                because it's bidirectional)
+            AUF:    number of features for each time step
+            HFL:    number of hidden units in the LSTMs
+            CS:     number of features in context for key and value
+            n_lay:  number of pyramidal BLSTMs in the listener
         """
         super(Listener, self).__init__()
-        # CONSIDER: adding a base BLSTM before the pyramidal BLSTMs.
-        # WARNING!  currently not in use
-        self.base_blstm = nn.LSTM(N, H, bidirectional=True, batch_first=True)
-        # three pyramidal bidirectional LSTM with one layer each
-        self.pBLSTM1 = pBLSTMLayer(N, H)
-        self.pBLSTM2 = pBLSTMLayer(2 * H, H)
-        self.pBLSTM3 = pBLSTMLayer(2 * H, H)
+        # base BLSTM before the pyramidal BLSTMs
+        self.base_blstm = nn.LSTM(AUF, HFL, bidirectional=True, batch_first=True)
+        # pyramidal bidirectional LSTMs
+        self.pyramidalBLSTM = nn.ModuleList()
+        for _ in range(n_lay):
+            # since it's bidirectional, it takes 2H features and returns 2H features
+            # i.e. doesn't change number of features
+            layer = pBLSTMLayer(2 * HFL, HFL)
+            self.pyramidalBLSTM.append(layer)
         # two MLPs to get the attention key and value
+        self.key_mlp = nn.Linear(2 * HFL, CS)
+        self.val_mlp = nn.Linear(2 * HFL, CS)
     
-    def forward(self, x):
+    def forward(self, x, true_lens):
         """
-          Forward input through three BLSTMs with pooling to reduce 
-          dimensionality eight-fold.
-          This module takes in an utterance of sequence length L with N 
-          features and outputs listener features of sequence length U 
-          (with U < L), K features (with K = 2*H).
-          Input size:
-            B x L x N
-          Output size:
-            B x U x K
-          Example:
-            Let N = 1000 and H = 256 and U = 125 (3 layers because 2^3 = 8)
-            Input:  64 x 1000 x  40 = 2.6M
-            Output: 64 x  125 x 512 = 4.1M
+          Forward input through three BLSTMs with pooling to reduce dimensions
+          eight-fold, while keeping track of the length of each sequence.
+          This module takes in an utterance of sequence length AUL with AUF
+          features and computes listener features of sequence length RAL with
+          2*HFL features.
+          Reduced sequence length: RAL = AUL / (2^n_lay).
+          It outputs the listener features as a key and a value, each 
+          of dimensions (BS, RAL, CS) (through an MLP).
+          Params:
+            x:          Tensor of size (BS, AUL, AUF)
+            true_lens:  list of length BS, keeping track of the true length
+                        of each input in the tensor x
+          Intermediate values:
+            x:          Listener features, tensor of size (BS, RAL, 2*HFL)
+          Returns:
+            key:        Tensor of size (BS, RAL, CS)
+            val:        Tensor of size (BS, RAL, CS)
+            true_lens:  list of length BS, keeping track of the new true
+                        length of each tensor in the batch.
         """
-        x, _ = self.pBLSTM1(x)
-        x, _ = self.pBLSTM2(x)
-        x, _ = self.pBLSTM3(x)
-        return x
+        # x is of size BS x AUL x AUF, true_lens doesn't change
+        x, _ = self.base_blstm(x)        
+        # x is of size B x AUL x 2*HFL
+        for layer in self.pyramidalBLSTM:
+            # each iteration halves the length of the tensor
+            x, true_lens = layer(x, true_lens)
+        # x is now of size BS x RAL x 2*HFL
+        # get the key and value through MLPs
+        # in BS x RAL x 2*HFL -> out BS x RAL x CS
+        key = self.key_mlp(x)
+        val = self.val_mlp(x)
+        return key, val, true_lens
+
 
 class Attention(nn.Module):
-    def __init__(self, K, P):
+    def __init__(self, CS):
         """
           Parameters:
-            K:  number of input features for the preprocessing MLPs
-                    (encoder state and listener features)
-                number of hidden features in the speller
-            P:  number of features after running preprocessing 
-                    (on encoder state and listener features)
+            CS: number of features in the context
         """
         super(Attention, self).__init__()
-        self.K = K
-        self.P = P
-        self.phi = nn.Linear(K, P)
-        self.psi = nn.Linear(K, P)
-        self.softmax = nn.Softmax(dim=-1)
-        self.activate = F.relu
+        self.CS = CS
 
-    def forward(self, si, h):
+    def forward(self, key, val, query, mask):
         """
           Parameters:
-            si: decoder state at time step i
-                B x 1 x K
-            h:  high level listener features by the pyramidal bLSTM
-                B x U x K
+            key:    key output by listener, tensor of size (BS, RAL, CS)
+            val:    value output by listener, tensor of size (BS, RAL, CS)
+            query:  this is the decoder output, tensor of size (BS, CS)
+            mask:   tensor for the mask (true lengths) of size (BS, RAL)
           Output:
-            a:  list of one tensor of size B x U
-            c:  tensor of size B x K
+            c:      context tensor of size (BS, CS)
+            a:      TODO attention score, list of one tensor of size (BS, RAL)
         """
-        # preprocess the decoder state to B x 1 x P
-        si = self.phi(si)
-        si = self.activate(si)
 
-        # preprocess the listener features
-        h_saved = h.clone()
-        B, U, K = h.size()
-        # reshape to B*U x K in order to run it through the MLP
-        # for preprocessing (each time step individually)
-        h = h.contiguous().view(-1, K)
-        # preprocessing of listener features
-        h = self.psi(h)
-        # reshape back to B x U x P
-        h = h.view(B, U, self.P)
-        h = self.activate(h)
+        # query, make it size (BS, CS, 1)
+        query = query.unsqueeze(2)
 
-        # transpose h to B x P x U
-        hT = h.transpose(1, 2)
-        # B x 1 x P mult B x P x U -> B x 1 x U
-        e = torch.bmm(si, h.transpose(1, 2))
-        # squeeze to B x U
-        e = e.squeeze(dim=1)
+        # energy is the product of key and query
+        # (BS, RAL, CS) x (BS, CS, 1)
+        # energy is of size (BS, RAL, 1)
+        energy = torch.bmm(key, query)
+        # energy is of size (BS, RAL)
+        energy = energy.squeeze(2)
 
-        # attention score by taking softmax
-        # will be B x U
-        a = self.softmax(e)
-        # turn into B x U x 1
-        a_ = a.unsqueeze(2)
-        # turn into B x U x K
-        a_ = a_.repeat(1, 1, K)
+        # attention is of size (BS, RAL)
+        # TODO does this work without masking it?
+        attention = F.softmax(energy, dim=1)
 
-        # compute the context
-        # h_saved and a_ are both B x U x K (element wise multiplication)
-        c = h_saved * a_
-        # sum along the U-axis to yield B x K tensor
-        c = torch.sum(c, dim=1)
+        # multiply the mask with the attention, element-wise
+        attention = attention * mask
+        # normalize the attention
+        attention = attention / attention.sum(dim=1, keepdim=True)
 
-        # return attention and context
-        return [a], c
+        # (BS, 1, RAL) x (BS, RAL, CS) = (BS, 1, CS)
+        attention = attention.unsqueeze(1)
+        context = torch.bmm(attention, val)
+        # context of size (BS, CS)
+        context = context.squeeze(1)
+
+        # attention of size (BS, RAL)
+        attention = attention.squeeze(1)
+
+        return context
+        # TODO
+        # return context, attention
+
 
 class Speller(nn.Module):
-    def __init__(self, C, K, P, max_label_len=77):
+    def __init__(self, CS, VOC, HFS, EMB):
         """
           Parameters:
-            C:  number of output classes
-            K:  number of input features for the preprocessing MLP
-                number of hidden features in the speller
-            P:  number of features after the preprocessing MLP
+            CS:     number of features in the context
+            VOC:    number of output classes
+            HFS:    number of hidden units in the speller
+            EMB:    embedding size
         """
         super(Speller, self).__init__()
-        self.C = C
-        self.K = K
+        self.CS = CS
+        self.VOC = VOC
+        self.HFS = HFS
+        self.EMB = EMB
         
         # save the float type (cuda or not)
         self.float_type = torch.torch.cuda.FloatTensor if torch.cuda.is_available() else torch.FloatTensor
-        self.max_label_len = max_label_len
 
-        # LSTM network with one layer
-        self.lstm = nn.LSTM(C+K, K, num_layers=1, batch_first=True)
+        # embedding layer
+        self.embedding = nn.Embedding(VOC, EMB)
+
+        # First LSTM cell
+        # in (BS, EMB+CS), hidden (BS, HFS) and cell (BS, HFS)
+        # out hidden (BS, HFS) and cell (BS, HFS)
+        self.lstm_cell_a = nn.LSTMCell(EMB + CS, HFS, bias=True)
+
+        # Second LSTM cell
+        # in (BS, HFS), hidden (BS, HFS) and cell (BS, HFS)
+        # out hidden (BS, HFS) and cell (BS, HFS)
+        self.lstm_cell_b = nn.LSTMCell(HFS, HFS, bias=True)
         
         # attention network
-        self.attention = Attention(K, P)
+        self.attention = Attention(CS)
+
+        # query projection
+        self.query_proj = nn.Linear(HFS, CS)
 
         # linear layer with softmax to get character distributions
-        self.char_distr = nn.Linear(2*K, C)
+        self.char_distr = nn.Linear(HFS + CS, VOC)
+        # TODO does this work without masking it?
         self.softmax = nn.LogSoftmax(dim=-1)
     
-    def forward(self, h, y, rate=0.9):
+    def forward(self, key, val, y, mask, tfr=0.9):
         """
           Parameters:
-            h:  listener features (from the Listener)
-                B x U x K
-            y:  ground truth
-                B x T
+            key:    size (BS, RAL, CS)
+            val:    size (BS, RAL, CS)
+            y:      size (BS, LAL)
+            mask:   size (BS, RAL)
+            tfr:    teacher forcing rate, float
           Returns:
-            pred_seq_raw:       raw sequence that is predicted
-                                list of tensors of size B x C
-            attention_record:   attention record of the network TODO
+            pred:   predictions, size (BS, LAL, VOC)
         """
-        # determine if we force the teacher or not
-        if y is None:
-            rate = 0.0
-        force_teacher = np.random.random_sample() < rate
 
-        # extract batch size
-        B = h.size(0)
+        # extract dimensions
+        BS, LAL = y.size()
 
-        # create the output word numpy array: B x 1
-        output_word = np.zeros((B, 1))
-        # turn into B x 1 x 1 float tensor
-        output_word = self.float_type(output_word)
-        output_word = output_word.unsqueeze(2)
-        # turn into long type
-        output_word = output_word.type(torch.LongTensor)
-        # create temporary zero tensor of size B x 1 x C
-        x = torch.LongTensor(B, 1, self.C)
-        x = x.zero_()
-        # create a tensor of size B x 1 x C 
-        # with ones for the first class and zeros for all other classes
-        x = x.scatter_(-1, output_word, 1)
-        x = x.type(self.float_type)
-        # turn it into a float typed variable
-        output_word = Variable(x)
-        # float variable of size B x 1 x C
-        output_word = output_word.type(self.float_type)
+        # list of LAL tensors of size (BS, VOC)
+        pred = []
 
-        # extract feature from listener features (size B x U x K)
-        # take only first time instance -> B x 1 x K
-        rnn_input_h = h[:,0:1,:]
-        # input to rnn from output_word and rnn_input_h
-        # tensor of size B x 1 x (K+C)
-        rnn_input = torch.cat([output_word, rnn_input_h], dim=-1)
+        # initial values for LSTM cell states and context
+        state_a = None
+        state_b = None
+        context = None
 
-        pred_seq_raw = []
-        hidden_state = None
-        attention_record = []
+        # we now iterate through time in order to make our 
+        # predictions, using the LSTMCells
+        for t in range(0, LAL):
+            # TODO teacher forcing
 
-        if (y is None) or (not force_teacher):
-            # we use our own produced characters
-            max_step = self.max_label_len
-        else:
-            # we take the ground truth characters
-            max_step = y.size(1)
+            # initialize time target to first target value 
+            # tensor of size (BS), values in [0, VOC-1]
+            y_t = y[:, t]
+
+            # get embedding, (BS, EMB)
+            embedding = self.embedding(y_t)
+
+            # create context bc it doesn't exist, move to GPU if possible
+            # size (BS, CS)
+            if context is None:
+                context = torch.zeros((BS, self.CS))
+                context = context.cuda() if torch.cuda.is_available() else context
+
+            # (BS, EMB) cat (BS, CS) = (BS, EMB+CS)
+            lstm_in = torch.cat([embedding, context], dim=1)
+
+            # run through the first cell
+            # hidden and cell state are (BS, HFS)
+            hidden_a, cell_a = self.lstm_cell_a(lstm_in, state_a)
+
+            # pass previous hidden state to this as input
+            # hidden and cell state are (BS, HFS)
+            hidden_b, cell_b = self.lstm_cell_b(hidden_a, state_b)
+
+            # compute query from the hidden state of the second 
+            # LSTM cell - the output of the RNN at this time step
+            # size (BS, CS)
+            query = self.query_proj(hidden_b)
+
+            # compute the context using the attention network
+            # size (BS, CS)
+            context = self.attention(key, val, query, mask)
+
+            # concatenate to get the output
+            # (BS, HFS) cat (BS, CS)
+            # size (BS, HFS+CS)
+            lstm_output = torch.cat([hidden_b, context], dim=1)
+
+            # predict next y, size (BS, VOC)
+            y_next = self.char_distr(lstm_output)
+
+            # save the cell states
+            state_a = (hidden_a, cell_a)
+            state_b = (hidden_b, cell_b)
+
+            # append the prediction to our list
+            pred.append(y_next)
         
-        for step in range(max_step):
-            # run the rnn_input through the LSTM (given initial hidden_state)
-            # rnn_output of size B x 1 x K
-            # hidden_state of sizes: B x 1 x K, B x 1 x K 
-            #   (hidden state and cell state)
-            rnn_output, hidden_state = self.lstm(rnn_input, hidden_state)
-            # attention score and context from rnn output and listener feature
-            # attention_score is list of one tensor of size B x U
-            # context is tensor of size B x K
-            attention_score, context = self.attention(rnn_output, h)
+        # free up GPU?
+        context = context.cpu()
+        del context
 
-            # concatenate the features from the output with the context
-            # B x K and B x K -> B x 2*K
-            concat_feature = torch.cat([rnn_output.squeeze(dim=1), context], dim=-1)
+        # make pred a tensor of size (BS, LAL, VOC)
+        pred = torch.stack(pred, dim=1)
+
+        return pred
+
+
+class ListenAttendSpell(nn.Module):
+    def __init__(self, AUF, HFL, CS, VOC, HFS, EMB, n_listener=3, tfr=0.9):
+        """
+          Create a new instance of the Listen, Attend, Spell model.
+          Params:
+            AUF:    number of features in audio input
+            HFL:    number of hidden states in the listener
+            CS:     number of features in context
+            VOC:    number of different elements in vocabulary
+            HFS:    number of hidden states in the speller
+            EMB:    number of features for the embedding
+          Optional params:
+            n_listener:     number of layers of pyramidal bLSTM in listener
+            tfr:            teacher forcing rate
+        """
+        super(ListenAttendSpell, self).__init__()
+        self.speller = Speller(CS, VOC, HFS, EMB)
+        self.listener = Listener(AUF, HFL, CS, n_lay=n_listener)
+    
+    def forward(self, x, y):
+        """
+          Forward the given batch through the LAS model.
+          Params:
+            x:  list of BS tensors of size (AUL, AUF)
+            y:  list of target labels
+          Returns:
+            xp: predictions of size (BS, LAL, VOC)
+        """
+        # compute the true length of all items in the list
+        true_lens = [e.size(0) for e in x]
+
+        # pad x and make it a tensor
+        # x of size (BS, AUL, AUF)
+        x = pad_sequence(x, batch_first=True)
+
+        # make sure the sequence lengths for the input are all 
+        # multiples of 8 because of the pBLSTMs.
+        if x.size(1) % 8 != 0:
+            pad_len = (x.size(1) // 8 + 1) * 8 - x.size(1)
+            x = F.pad(x, (0, 0, 0, pad_len))
+
+        # pass x through the listener
+        # key, val of size (BS, RAL, CS)
+        # true_lens a list of BS integers
+        key, val, true_lens = self.listener(x, true_lens)
+
+        # pad y and make it a tensor
+        # y of size (BS, LAL)
+        y = pad_sequence(y, batch_first=True, padding_value=Symbols.EOS)
+
+        # make the mask
+        # mask of size (BS, RAL)
+        mask_size = (x.size(0), key.size(1))
+        mask = torch.zeros(mask_size)
+        mask = mask.type(torch.int)
+        mask = mask.cuda() if torch.cuda.is_available() else mask
+        for batch_idx, max_time in enumerate(true_lens):
+            mask[batch_idx, :max_time] = 1
+        
+        # use the speller to make the predictions
+        pred = self.speller(key, val, y, mask)
+
+        # free up GPU?
+        mask = mask.cpu()
+        del mask
+
+        # return predictions of size (BS, LAL, VOC)
+        return pred
+    
+    def train_batch(self, x, y):
+        """
+          Train this batch and return the loss
+          Params:
+            x:  list of BS tensors of size (AUL, AUF)
+            y:  list of target labels
+          Returns:
+            bl: batch loss
+        """
+        # compute the true length of all items in the list
+        true_lens = [e.size(0) for e in x]
+
+        # pad x and make it a tensor
+        # x of size (BS, AUL, AUF)
+        x = pad_sequence(x, batch_first=True)
+
+        # make sure the sequence lengths for the input are all 
+        # multiples of 8 because of the pBLSTMs.
+        if x.size(1) % 8 != 0:
+            pad_len = (x.size(1) // 8 + 1) * 8 - x.size(1)
+            x = F.pad(x, (0, 0, 0, pad_len))
+        
+        # pad y and make it a tensor
+        # y of size (BS, LAL)
+        y = pad_sequence(y, batch_first=True, padding_value=Symbols.EOS)
+
+        # turn the data into a variable types
+        x = Variable(x)
+        y = Variable(y, requires_grad=False)
+        x = x.type(torch.FloatTensor)
+        # move to GPU if available
+        if self.use_gpu:
+            x = x.cuda()
+            y = y.cuda()
+        
+        # prepare for forward pass
+        self.optimizer.zero_grad()
+
+        # pass x through the listener
+        # key, val of size (BS, RAL, CS)
+        # true_lens a list of BS integers
+        key, val, true_lens = self.listener(x, true_lens)
+
+        # make the mask
+        # mask of size (BS, RAL)
+        mask_size = (x.size(0), key.size(1))
+        mask = torch.zeros(mask_size)
+        mask = mask.type(torch.int)
+        mask = mask.cuda() if torch.cuda.is_available() else mask
+        for batch_idx, max_time in enumerate(true_lens):
+            mask[batch_idx, :max_time] = 1
+        
+        # use the speller to make the predictions
+        # pred of size (BS, LAL, VOC)
+        pred = self.speller(key, val, y, mask)
+
+        # get the true prediction
+        y = y.data.contiguous()
+        y = y.type(torch.cuda.LongTensor) if self.use_gpu else y.type(torch.LongTensor)
+
+        # setup the criterion
+        criterion = nn.CrossEntropyLoss()
+        criterion = criterion.cuda() if self.use_gpu else criterion
+
+        # compute the loss
+        loss = criterion(pred, y)
+
+        # backward pass
+        loss.backward()
+        self.optimizer.step()
+        batch_loss = loss.cpu().item()
+
+        # free up GPU?
+        mask = mask.cpu()
+        del mask
+
+        return batch_loss
+    
+    def train(self, config_path):
+        """
+          Train the LAS model based on the hyperparameters found 
+          in the configuration file.
+        """
+        # load configurations
+        self.conf = yaml.load(open(config_path, 'r'))
+        self.name = self.conf['meta_params']['model_name']
+
+        # data loaders
+        self.val_loader = data.val_loader()
+        self.train_loader = data.train_loader()
+
+        # learning parameters
+        params = [{'params': self.listener.parameters()}, {'params': self.speller.parameters()}]
+        l_rate = self.conf['training_params']['learning_rate']
+        self.n_epochs = self.conf['training_params']['n_epochs']
+
+        # optimizer for learning
+        self.optimizer = torch.optim.Adam(params, l_rate)
+
+        # check GPU availability
+        self.use_gpu = torch.cuda.is_available()
+
+        # move networks to GPU if possible
+        if self.use_gpu:
+            self.speller = self.speller.cuda()
+            self.listener = self.listener.cuda()
+        
+        #
+        # run the epochs
+        #
+        for epoch_i in range(self.n_epochs):
+
+            n_batches = len(self.train_loader)
+            epoch_start = time.time()
+            batch_start = None
+
+            # Training
+            for idx, (batch_data, batch_label) in enumerate(self.train_loader):
+
+                # start stopwatch for the next iteration
+                batch_start = time.time()
+
+                # forward and backward pass for this batch
+                batch_loss = self.train_batch(batch_data, batch_label)
+
+                # end stop watch for iteration
+                batch_end = time.time()
+                
+                print('\rEpoch {:02}\tBatch {:03}/{:03}\tLoss {:7.3f}\tDur {:5.3f}'.format(epoch_i+1, idx+1, n_batches, batch_loss, batch_end - batch_start), end='', flush=True)
             
-            # raw prediction (through MLP), tensor of size B x C
-            # input of shape B x 2*K
-            raw_pred = self.char_distr(concat_feature)
-            # softmax to get probabilities
-            raw_pred = self.softmax(raw_pred)
+            print('\rEpoch {:02} completed in {:5.3f}s'.format(epoch_i, time.time() - epoch_start))
             
-            # append to the sequence of raw predictions
-            pred_seq_raw.append(raw_pred)
+            self.save(epoch_i)
+    
+    def save(self, add):
+        """
+          Save the current model to the path specified in the config file.
+          Params:
+            add:    number to add to the end of the model path
+        """
+        # create folder if it doesn't exist yet
+        path = self.conf['meta_params']['model_folder']
+        if not os.path.exists(path):
+            os.makedirs(path)
+        # get the paths to which we save the model
+        speller_path = os.path.join(path, '{}_{}.speller'.format(self.name, add))
+        listener_path = os.path.join(path, '{}_{}.listener'.format(self.name, add))
+        # save the state dictionaries
+        torch.save(self.speller.state_dict(), speller_path)
+        torch.save(self.listener.state_dict(), listener_path)
+    
+    def load(self, add):
+        """
+          Load the model from the path specified in the config file.
+          Params:
+            add:    string to add to the end of the model path
+        """
+        path = self.conf['meta_params']['model_folder']
+        assert os.path.exists(path), 'Path to model doesnt exist'
+        # get the paths from where we load the model
+        speller_path = os.path.join(path, '{}_{}.speller'.format(self.name, add))
+        listener_path = os.path.join(path, '{}_{}.listener'.format(self.name, add))
+        # make sure the files exist
+        assert os.path.exists(speller_path), 'Speller path doesnt exist'
+        assert os.path.exists(listener_path), 'Listener path doesnt exist'
+        # load the state dictionaries into the models
+        self.speller.load_state_dict(torch.load(speller_path))
+        self.listener.load_state_dict(torch.load(listener_path))
 
-            # append attention score to sequence
-            attention_record.append(attention_score)
-
-            if force_teacher:
-                # force the input for the next timestep, size B x 1 x T
-                target = y[:, step]
-                output_word = torch.zeros_like(raw_pred)
-                for idx, i in enumerate(target):
-                    output_word[idx, int(i)] = 1
-                output_word = output_word.type(self.float_type)
-                output_word = output_word.unsqueeze(1)
-            else:
-                # ## Case 0. raw output as input, size B x 1 x C
-                # output_word = raw_pred.unsqueeze(1)
-
-                ## Case 1. Pick character with max probability
-                # output word with size B x C
-                output_word = torch.zeros_like(raw_pred)
-                # get the k best predictions (here: only one)
-                best_raw_pred = raw_pred.topk(1)
-                best_raw_pred_idxs = best_raw_pred[1]
-                # set the class label to 1 for the argmaxed class
-                for idx, i in enumerate(best_raw_pred_idxs):
-                    output_word[idx,int(i)] = 1
-                # output word with size B x 1 x C
-                output_word = output_word.unsqueeze(1)
-
-                # ## Case 2. Sample categotical label from raw prediction
-                # # create a categorical distribution from the raw prediction
-                # categorical_distr = Categorical(raw_pred)
-                # # sample a word from the distribution
-                # sampled_word = categorical_distr.sample()
-                # # set the class of the sampled word to one, all others zero
-                # output_word = torch.zeros_like(raw_pred)
-                # for idx, i in enumerate(sampled_word):
-                #     output_word[idx,int(i)] = 1
-                # # turn output_word into B x 1 x C
-                # output_word = output_word.unsqueeze(1)
-            
-            # resize context tensor to size B x 1 x K
-            context = context.unsqueeze(1)
-            # cat output_word and context to get rnn input, B x 1 x (K+C)
-            rnn_input = torch.cat([output_word, context], dim=-1)
-
-        return pred_seq_raw, attention_record
-
-def createModel(N, H, C, K, P, max_label_len):
-    listener = Listener(N, H)
-    speller = Speller(C, K, P, max_label_len)
-    return listener, speller

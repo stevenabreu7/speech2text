@@ -40,7 +40,7 @@ class WSJDataset(Dataset):
     def __len__(self):
         return len(self.X)
 
-def collate_lines(l):
+def collate_padded(l):
     """
       Called by the data loader when collating lines. 
       Pad the sequences with zeros to turn them into a 3D tensor with 
@@ -59,6 +59,15 @@ def collate_lines(l):
         x = F.pad(x, (0, 0, 0, pad_len))
     return x, y
 
+def collate_unpadded(l):
+    """
+      Called by the data loader when collating lines. 
+      Only return the lists, don't pad anything.
+    """
+    x, y = zip(*l)
+    x, y = list(x), list(y)
+    return x, y
+
 def train_loader():
     """
       Loads the training data (letter wise). 
@@ -75,7 +84,7 @@ def train_loader():
             T is the length of the label, variable
     """
     train_dataset = WSJDataset('data', 'train', 'l', sorting=True)
-    train_loader = DataLoader(train_dataset, batch_size=64, shuffle=False, collate_fn=collate_lines)
+    train_loader = DataLoader(train_dataset, batch_size=64, shuffle=False, collate_fn=collate_unpadded)
     return train_loader
 
 def val_loader():
@@ -94,5 +103,5 @@ def val_loader():
             T is the length of the label, variable
     """
     val_dataset = WSJDataset('data', 'dev', 'l', sorting=True)
-    val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False, collate_fn=collate_lines)
+    val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False, collate_fn=collate_unpadded)
     return val_loader

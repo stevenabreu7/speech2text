@@ -4,15 +4,15 @@ meta_params:
   model_folder: 'models/'
 
 training_params:
-  tf_rate: 0.9
   n_epochs: 20
-  max_label_len: 77
   learning_rate: 0.0001
 
 model_params:
-  N: 40
-  H: 256
-  C: 34
-  K: 512
-  P: 128
-  max_label_len: 77
+  AUF: 40
+  HFL: 256
+  CS: 128
+  VOC: 34
+  HFS: 512
+  EMB: 64
+  tfr: 0.9
+  n_listener: 3               # number of layers in the listener
