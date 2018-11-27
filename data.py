@@ -84,7 +84,7 @@ def train_loader():
             T is the length of the label, variable
     """
     train_dataset = WSJDataset('data', 'train', 'l', sorting=True)
-    train_loader = DataLoader(train_dataset, batch_size=64, shuffle=False, collate_fn=collate_unpadded)
+    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=False, collate_fn=collate_unpadded)
     return train_loader
 
 def val_loader():
@@ -103,5 +103,5 @@ def val_loader():
             T is the length of the label, variable
     """
     val_dataset = WSJDataset('data', 'dev', 'l', sorting=True)
-    val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False, collate_fn=collate_unpadded)
+    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, collate_fn=collate_unpadded)
     return val_loader
