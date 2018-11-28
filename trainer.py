@@ -3,11 +3,13 @@ import yaml
 import torch
 import notify
 import argparse
+import numpy as np
 import torch.nn as nn
 import torch.nn.utils.rnn as rnn
 import torch.nn.functional as func
 from torch.autograd import Variable
 from torch.distributions.categorical import Categorical
+from decoder import decode_train
 from speller import Speller
 from listener import Listener
 from wsj_loader import val_loader, train_loader
@@ -136,6 +138,76 @@ class Trainer():
 
         return loss.cpu().item()
     
+    def generate_single(self, x, n):
+        """
+          Generate sentences for the given data.
+          Params:
+            x: tensor of size (AUL, AUF)
+            n: number of random searches to make
+        """
+        # single batch
+        x = x.unsqueeze(0)
+        # x: (1, AUL, AUF)
+
+        # make sure x's length is divisible by eight
+        if x.size(1) % 8 != 0:
+            pad_len = (x.size(1) // 8 + 1) * 8 - x.size(1)
+            x = func.pad(x, (0, 0, 0, pad_len))
+        # x: (AUL, AUF)
+
+        key, val, true_lens = self.listener(x, [x.size(1)])
+        # key: (1, RAL, CS)
+        # val: (1, RAL, CS)
+        # true_lens: list with one entry
+
+        mask = torch.zeros((1, key.size(1)))
+        mask = mask.type(torch.FloatTensor)
+        mask[0, :true_lens[0]] = 1
+        # mask: (1, RAL)
+
+        pred = self.speller(key, val, None, mask)
+        # pred: (1, LAL, VOC)
+        pred = pred.squeeze(0)
+        # pred: (LAL, VOC)
+
+        p = func.softmax(pred, dim=1)
+        # p: (LAL, VOC)
+
+        # make a distribution
+        distr = Categorical(p)
+
+        # get samples
+        samples = [distr.sample() for i in range(n)]
+        # samples: [n] x (250)
+
+        for idx in range(len(samples)):
+            samples[idx] = samples[idx][:list(samples[idx]).index(33)+1]
+            # samples[idx] = samples[idx].numpy()
+            # samples[idx] = decode_train(samples[idx])
+        # samples: [n] x (variable_length)
+
+        losses = []
+        for idx in range(len(samples)):
+            y = samples[idx]
+            y = y.unsqueeze(0)
+            # y: (1, YLEN)
+            # y: (YLEN)
+            pred = self.speller(key, val, y, mask, pred_mode=True)
+            pred = pred.permute(0, 2, 1)
+            # pred: (1, VOC, LAL)
+            y_len = y.size(1)
+            pred = pred[:, :, :y_len]
+            # pred: (1, VOC, YLEN)
+            losses.append(self.criterion(pred, y).cpu().item())
+        
+        idx = losses.index(min(losses))
+
+        res = samples[idx]
+
+        print(decode_train(res.numpy()))
+
+        return res
+
     def train(self):
 
         while self.epoch_i < self.n_epochs:
@@ -225,4 +297,7 @@ if __name__ == '__main__':
 
     conf = yaml.load(open(args.config, 'r'))
     trainer = Trainer(**conf['model_params'])
-    trainer.train()
+
+    x = np.load('data/test.npy', encoding='bytes')[0]
+    x = torch.Tensor(x)
+    trainer.generate_single(x, 10)

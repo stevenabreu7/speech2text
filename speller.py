@@ -1,8 +1,12 @@
 import torch
 import random
+import numpy as np
 import torch.nn as nn
 from attender import Attender
 from torch.distributions.categorical import Categorical
+
+
+SOS = 32
 
 
 class Speller(nn.Module):
@@ -48,7 +52,7 @@ class Speller(nn.Module):
         self.char_distr = nn.Linear(HFS + CS, VOC)
         self.softmax = nn.LogSoftmax(dim=-1)
     
-    def forward(self, key, val, y, mask, tfr=0.9):
+    def forward(self, key, val, y, mask, tfr=0.9, pred_mode=False):
         """
           Parameters:
             key:    size (BS, RAL, CS)
@@ -61,7 +65,11 @@ class Speller(nn.Module):
         """
 
         # extract dimensions
-        BS, LAL = y.size()
+        if y is None:
+            BS = key.size(0)
+            LAL = 250 # max transcript length in training set
+        else:
+            BS, LAL = y.size()
 
         # list of LAL tensors of size (BS, VOC)
         pred = []
@@ -75,14 +83,20 @@ class Speller(nn.Module):
         # we now iterate through time in order to make our 
         # predictions, using the LSTMCells
         for t in range(0, LAL):
-            do_tf = random.random() > self.tfr and t > 0
+            do_tf = random.random() > self.tfr or y is None
+            if pred_mode:
+                do_tf = False
 
-            if do_tf:
+            if do_tf and t > 0:
                 # initialize time target to last generated value
                 # y_next: (BS, VOC)
                 y_next = self.softmax(y_next)
                 y_t = Categorical(y_next).sample()
                 # y_t: (BS), values in [0, VOC-1]
+            elif do_tf and t == 0:
+                # feed it the start of sentence symbol (SOS)
+                y_t = np.array([SOS] * BS)
+                y_t = torch.Tensor(y_t)
             else:
                 # initialize time target to target value 
                 # tensor of size (BS), values in [0, VOC-1]
