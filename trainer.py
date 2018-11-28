@@ -23,12 +23,6 @@ class Trainer():
         self.log_path = log_path
         self.model_path = model_path
 
-        if load_epochs is not None:
-            self.load(load_epochs)
-            self.epoch_i = load_epochs
-        else:
-            self.epoch_i = 0
-
         self.tfr = tfr
         self.n_epochs = n
 
@@ -49,6 +43,12 @@ class Trainer():
             self.speller = self.speller.cuda()
             self.listener = self.listener.cuda()
             self.criterion = self.criterion.cuda()
+        
+        if load_epochs is not None:
+            self.load(load_epochs)
+            self.epoch_i = load_epochs
+        else:
+            self.epoch_i = 0
 
     def forward_batch(self, x, y, training):
         """
