@@ -199,4 +199,5 @@ class Trainer():
 
 conf = yaml.load(open('config/las_config.yaml', 'r'))
 trainer = Trainer(**conf['model_params'])
+trainer.load(3)
 trainer.train()
