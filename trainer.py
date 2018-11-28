@@ -7,9 +7,9 @@ import torch.nn as nn
 import torch.nn.utils.rnn as rnn
 import torch.nn.functional as func
 from torch.autograd import Variable
+from torch.distributions.categorical import Categorical
 from speller import Speller
 from listener import Listener
-from decoder import decode_train
 from wsj_loader import val_loader, train_loader
 
 
@@ -180,7 +180,9 @@ class Trainer():
 
             # SAVE
             self.save(self.epoch_i+1)
-    
+
+            self.epoch_i += 1
+
     def save(self, epoch):
         """
           Save the current model to the path specified in the config file.
