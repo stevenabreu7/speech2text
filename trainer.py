@@ -16,14 +16,14 @@ EOS = 33
 
 
 class Trainer():
-    def __init__(self, name, log_path, model_path, AUF, HFL, CS, VOC, HFS, EMB, lr, n, tfr, load_model, load_epochs):
+    def __init__(self, name, log_path, model_path, AUF, HFL, CS, VOC, HFS, EMB, lr, n, tfr, load_epochs):
         print('\rSetting up trainer...', end='', flush=True)
         self.name = name
         self.log_path = log_path
         self.model_path = model_path
 
-        if load_model is not None:
-            self.load(load_model, load_epochs)
+        if load_epochs is not None:
+            self.load(load_epochs)
             self.epoch_i = load_epochs
         else:
             self.epoch_i = 0
@@ -187,17 +187,16 @@ class Trainer():
         torch.save(self.speller.state_dict(), speller_path)
         torch.save(self.listener.state_dict(), listener_path)
     
-    def load(self, model_name, epoch):
+    def load(self, epoch):
         """
           Load the model from the path specified in the config file.
           Params:
-            model_name: name of the model to load
             epoch:      string to add to the end of the model path
         """
         path = self.model_path
         # get the paths from where we load the model
-        speller_path = os.path.join(path, '{}_{}.speller'.format(model_name, epoch))
-        listener_path = os.path.join(path, '{}_{}.listener'.format(model_name, epoch))
+        speller_path = os.path.join(path, '{}_{}.speller'.format(self.name, epoch))
+        listener_path = os.path.join(path, '{}_{}.listener'.format(self.name, epoch))
         # make sure the files exist
         assert os.path.exists(speller_path), 'Speller path doesnt exist'
         assert os.path.exists(listener_path), 'Listener path doesnt exist'

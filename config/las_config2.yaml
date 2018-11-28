@@ -1,6 +1,6 @@
-# vanilla model
+# larger learning rate
 model_params:
-  name: 'las_basic'
+  name: 'las_basic2'
   log_path: 'log'
   model_path: 'models'
   load_epochs: null
@@ -10,6 +10,6 @@ model_params:
   VOC: 34
   HFS: 512
   EMB: 64
-  lr: 0.0001
+  lr: 0.001
   n: 20
   tfr: 0.9
