@@ -155,6 +155,9 @@ class Trainer():
             x = func.pad(x, (0, 0, 0, pad_len))
         # x: (AUL, AUF)
 
+        if self.use_gpu:
+            x = x.cuda()
+
         key, val, true_lens = self.listener(x, [x.size(1)])
         # key: (1, RAL, CS)
         # val: (1, RAL, CS)
@@ -164,6 +167,9 @@ class Trainer():
         mask = mask.type(torch.FloatTensor)
         mask[0, :true_lens[0]] = 1
         # mask: (1, RAL)
+
+        if self.use_gpu:
+            mask = mask.cuda()
 
         pred = self.speller(key, val, None, mask)
         # pred: (1, LAL, VOC)
@@ -192,6 +198,8 @@ class Trainer():
             y = y.unsqueeze(0)
             # y: (1, YLEN)
             # y: (YLEN)
+            if self.use_gpu:
+                y = y.cuda()
             pred = self.speller(key, val, y, mask, pred_mode=True)
             pred = pred.permute(0, 2, 1)
             # pred: (1, VOC, LAL)
