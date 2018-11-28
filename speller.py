@@ -1,6 +1,8 @@
 import torch
+import random
 import torch.nn as nn
 from attender import Attender
+from torch.distributions.categorical import Categorical
 
 
 class Speller(nn.Module):
@@ -44,6 +46,7 @@ class Speller(nn.Module):
 
         # linear layer with softmax to get character distributions
         self.char_distr = nn.Linear(HFS + CS, VOC)
+        self.softmax = nn.LogSoftmax(dim=-1)
     
     def forward(self, key, val, y, mask, tfr=0.9):
         """
@@ -67,15 +70,26 @@ class Speller(nn.Module):
         state_a = None
         state_b = None
         context = None
+        y_next = None
 
         # we now iterate through time in order to make our 
         # predictions, using the LSTMCells
         for t in range(0, LAL):
-            # TODO teacher forcing
+            do_tf = random.random() > self.tfr and t > 0
 
-            # initialize time target to first target value 
-            # tensor of size (BS), values in [0, VOC-1]
-            y_t = y[:, t].type(torch.LongTensor)
+            if do_tf:
+                # initialize time target to last generated value
+                # y_next: (BS, VOC)
+                y_next = self.softmax(y_next)
+                y_t = Categorical(y_next).sample()
+                # y_t: (BS), values in [0, VOC-1]
+            else:
+                # initialize time target to target value 
+                # tensor of size (BS), values in [0, VOC-1]
+                y_t = y[:, t]
+            
+            # ensure right type for y_t
+            y_t = y_t.type(torch.LongTensor)
             if torch.cuda.is_available():
                 y_t = y_t.cuda()
 
