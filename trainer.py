@@ -1,6 +1,7 @@
 import os
 import yaml
 import torch
+import argparse
 import torch.nn as nn
 import torch.nn.utils.rnn as rnn
 import torch.nn.functional as func
@@ -204,6 +205,12 @@ class Trainer():
         self.speller.load_state_dict(torch.load(speller_path))
         self.listener.load_state_dict(torch.load(listener_path))
 
-conf = yaml.load(open('config/las_config.yaml', 'r'))
-trainer = Trainer(**conf['model_params'])
-trainer.train()
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument("config", help="path to the config file to be used")
+    args = parser.parse_args()
+
+    conf = yaml.load(open(args.config, 'r'))
+    trainer = Trainer(**conf['model_params'])
+    trainer.train()
