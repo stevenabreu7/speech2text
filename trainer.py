@@ -15,11 +15,17 @@ EOS = 33
 
 
 class Trainer():
-    def __init__(self, name, log_path, model_path, AUF, HFL, CS, VOC, HFS, EMB, lr, n, tfr):
+    def __init__(self, name, log_path, model_path, AUF, HFL, CS, VOC, HFS, EMB, lr, n, tfr, load_model, load_epochs):
         print('\rSetting up trainer...', end='', flush=True)
         self.name = name
         self.log_path = log_path
         self.model_path = model_path
+
+        if load_model is not None:
+            self.load(load_model, load_epochs)
+            self.epoch_i = load_epochs
+        else:
+            self.epoch_i = 0
 
         self.tfr = tfr
         self.n_epochs = n
@@ -130,7 +136,7 @@ class Trainer():
     
     def train(self):
 
-        for epoch_i in range(self.n_epochs):
+        while self.epoch_i < self.n_epochs:
             
             # TRAINING
             n_batches = len(self.train_loader)
@@ -142,7 +148,7 @@ class Trainer():
                 cur_loss = loss / (idx+1)
 
                 print('\r[TRAIN] Epoch {:02}  Batch {:03}/{:03}  Loss {:7.3f}  Perplexity {:7.3f}'.format(
-                    epoch_i+1, idx+1, n_batches, cur_loss, 2**cur_loss
+                    self.epoch_i+1, idx+1, n_batches, cur_loss, 2**cur_loss
                 ), end='', flush=True)
             print()
 
@@ -156,40 +162,41 @@ class Trainer():
                 cur_loss = loss / (idx+1)
 
                 print('\r[VAL] Epoch {:02}  Batch {:03}/{:03}  Loss {:7.3f}  Perplexity {:7.3f}'.format(
-                    epoch_i+1, idx+1, n_batches, cur_loss, 2**cur_loss
+                    self.epoch_i+1, idx+1, n_batches, cur_loss, 2**cur_loss
                 ), end='', flush=True)
             print()
 
             # SAVE
-            self.save(epoch_i)
+            self.save(self.epoch_i+1)
     
-    def save(self, add):
+    def save(self, epoch):
         """
           Save the current model to the path specified in the config file.
           Params:
-            add:    number to add to the end of the model path
+            epoch:    number to add to the end of the model path
         """
         # create folder if it doesn't exist yet
         path = self.model_path
         if not os.path.exists(path):
             os.makedirs(path)
         # get the paths to which we save the model
-        speller_path = os.path.join(path, '{}_{}.speller'.format(self.name, add))
-        listener_path = os.path.join(path, '{}_{}.listener'.format(self.name, add))
+        speller_path = os.path.join(path, '{}_{}.speller'.format(self.name, epoch))
+        listener_path = os.path.join(path, '{}_{}.listener'.format(self.name, epoch))
         # save the state dictionaries
         torch.save(self.speller.state_dict(), speller_path)
         torch.save(self.listener.state_dict(), listener_path)
     
-    def load(self, add):
+    def load(self, model_name, epoch):
         """
           Load the model from the path specified in the config file.
           Params:
-            add:    string to add to the end of the model path
+            model_name: name of the model to load
+            epoch:      string to add to the end of the model path
         """
         path = self.model_path
         # get the paths from where we load the model
-        speller_path = os.path.join(path, '{}_{}.speller'.format(self.name, add))
-        listener_path = os.path.join(path, '{}_{}.listener'.format(self.name, add))
+        speller_path = os.path.join(path, '{}_{}.speller'.format(model_name, epoch))
+        listener_path = os.path.join(path, '{}_{}.listener'.format(model_name, epoch))
         # make sure the files exist
         assert os.path.exists(speller_path), 'Speller path doesnt exist'
         assert os.path.exists(listener_path), 'Listener path doesnt exist'
@@ -199,5 +206,4 @@ class Trainer():
 
 conf = yaml.load(open('config/las_config.yaml', 'r'))
 trainer = Trainer(**conf['model_params'])
-trainer.load(3)
 trainer.train()

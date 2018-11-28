@@ -11,6 +11,8 @@ model_params:
   name: 'las_basic'
   log_path: 'log'
   model_path: 'models'
+  load_model: 'las_basic'
+  load_epochs: 2
   AUF: 40
   HFL: 256
   CS: 128
