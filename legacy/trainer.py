@@ -6,7 +6,6 @@ import model
 import torch
 import numpy as np
 import torch.nn as nn
-from tensorboardX import SummaryWriter
 from torch.autograd import Variable
 
 class Trainer():
@@ -24,12 +23,11 @@ class Trainer():
         self.train_loader = data.train_loader()
 
         # models
-        self.listener, self.speller = model.createModel(**self.conf['model_params'])
+        self.model = model.ListenAttendSpell(**self.conf['model_params'])
 
         # learning parameters
-        params = [{'params': self.listener.parameters()}, {'params': self.speller.parameters()}]
+        params = [{'params': self.model.listener.parameters()}, {'params': self.model.speller.parameters()}]
         l_rate = self.conf['training_params']['learning_rate']
-        self.tf_rate = self.conf['training_params']['tf_rate']
         self.n_epochs = self.conf['training_params']['n_epochs']
 
         # optimizer for learning
@@ -40,24 +38,19 @@ class Trainer():
 
         # move networks to GPU if possible
         if self.use_gpu:
-            self.speller = self.speller.cuda()
-            self.listener = self.listener.cuda()
+            self.model.speller = self.model.speller.cuda()
+            self.model.listener = self.model.listener.cuda()
         
         # whether or not to log and debug
         self.logging = logging
         self.debug = debug
-
-        # tensorboard logging
-        log_path = self.conf['meta_params']['log_folder']
-        log_path += self.name
-        self.log_writer = SummaryWriter(log_path)
     
     def train_batch(self, batch_data, batch_label):
         """
           Forward and backward pass for one batch.
           Params:
-            batch_data:     tensor of size B x L x N
-            batch_label:    tensor of size B x T
+            batch_data:     list of BS tensors of size (AUL*, AUF)
+            batch_label:    list of BS target labels
             debug:          whether or not to display debugging messages
           Returns:
             batch_loss:     loss for this batch
@@ -114,7 +107,7 @@ class Trainer():
         # backward pass
         loss.backward()
         self.optimizer.step()
-        batch_loss = loss.cpu().data.numpy()
+        batch_loss = loss.cpu().item().numpy()
 
         return batch_loss
     
