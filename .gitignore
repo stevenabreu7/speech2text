@@ -3,3 +3,4 @@ data/*.pkl
 *.pyc
 __pycache__
 log
+secrets.py

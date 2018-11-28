@@ -1,6 +1,7 @@
 import os
 import yaml
 import torch
+import notify
 import argparse
 import torch.nn as nn
 import torch.nn.utils.rnn as rnn
@@ -153,6 +154,11 @@ class Trainer():
                 ), end='', flush=True)
             print()
 
+            notify.send(
+                '[TRAIN] Epoch {:02}'.format(self.epoch_i+1), 
+                'Loss {:7.3f} Perplexity {:7.3f}'.format(loss/n_batches, 2**(loss/n_batches))
+            )
+
             # VALIDATION
             n_batches = len(self.val_loader)
             loss = 0.0
@@ -166,6 +172,11 @@ class Trainer():
                     self.epoch_i+1, idx+1, n_batches, cur_loss, 2**cur_loss
                 ), end='', flush=True)
             print()
+
+            notify.send(
+                '[VAL] Epoch {:02}'.format(self.epoch_i+1), 
+                'Loss {:7.3f} Perplexity {:7.3f}'.format(loss/n_batches, 2**(loss/n_batches))
+            )
 
             # SAVE
             self.save(self.epoch_i+1)
