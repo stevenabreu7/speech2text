@@ -187,7 +187,8 @@ class Trainer():
         # samples: [n] x (250)
 
         for idx in range(len(samples)):
-            samples[idx] = samples[idx][:list(samples[idx]).index(33)+1]
+            if 33 in list(samples[idx]):
+                samples[idx] = samples[idx][:list(samples[idx]).index(33)+1]
             # samples[idx] = samples[idx].numpy()
             # samples[idx] = decode_train(samples[idx])
         # samples: [n] x (variable_length)
