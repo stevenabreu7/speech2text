@@ -4,19 +4,21 @@ from attender import Attender
 
 
 class Speller(nn.Module):
-    def __init__(self, CS, VOC, HFS, EMB):
+    def __init__(self, CS, VOC, HFS, EMB, tfr):
         """
           Parameters:
             CS:     number of features in the context
             VOC:    number of output classes
             HFS:    number of hidden units in the speller
             EMB:    embedding size
+            tfr:    teacher forcing rate
         """
         super(Speller, self).__init__()
         self.CS = CS
         self.VOC = VOC
         self.HFS = HFS
         self.EMB = EMB
+        self.tfr = tfr
         
         # save the float type (cuda or not)
         self.float_type = torch.torch.cuda.FloatTensor if torch.cuda.is_available() else torch.FloatTensor
@@ -42,8 +44,6 @@ class Speller(nn.Module):
 
         # linear layer with softmax to get character distributions
         self.char_distr = nn.Linear(HFS + CS, VOC)
-        # TODO does this work without masking it?
-        self.softmax = nn.LogSoftmax(dim=-1)
     
     def forward(self, key, val, y, mask, tfr=0.9):
         """
