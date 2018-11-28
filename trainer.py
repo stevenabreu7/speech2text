@@ -134,25 +134,29 @@ class Trainer():
             
             # TRAINING
             n_batches = len(self.train_loader)
+            loss = 0.0
 
             for idx, (batch_data, batch_label) in enumerate(self.train_loader):
 
-                batch_loss = self.forward_batch(batch_data, batch_label, training=True)
+                loss += self.forward_batch(batch_data, batch_label, training=True)
+                cur_loss = loss / (idx+1)
 
                 print('\r[TRAIN] Epoch {:02}  Batch {:03}/{:03}  Loss {:7.3f}  Perplexity {:7.3f}'.format(
-                    epoch_i+1, idx+1, n_batches, batch_loss, 2**batch_loss
+                    epoch_i+1, idx+1, n_batches, cur_loss, 2**cur_loss
                 ), end='', flush=True)
             print()
 
             # VALIDATION
             n_batches = len(self.val_loader)
+            loss = 0.0
 
             for idx, (batch_data, batch_label) in enumerate(self.val_loader):
 
-                batch_loss = self.forward_batch(batch_data, batch_label, training=False)
+                loss += self.forward_batch(batch_data, batch_label, training=False)
+                cur_loss = loss / (idx+1)
 
                 print('\r[VAL] Epoch {:02}  Batch {:03}/{:03}  Loss {:7.3f}  Perplexity {:7.3f}'.format(
-                    epoch_i+1, idx+1, n_batches, batch_loss, 2**batch_loss
+                    epoch_i+1, idx+1, n_batches, cur_loss, 2**cur_loss
                 ), end='', flush=True)
             print()
 
