@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from attender import Attender
 
+
 class Speller(nn.Module):
     def __init__(self, CS, VOC, HFS, EMB):
         """
