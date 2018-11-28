@@ -213,7 +213,7 @@ class Trainer():
 
         res = samples[idx]
 
-        print(decode_train(res.numpy()))
+        print(decode_train(res.cpu().numpy()))
 
         return res
 
