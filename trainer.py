@@ -52,7 +52,7 @@ class Trainer():
         else:
             self.epoch_i = 0
 
-    def forward_batch(self, x, y, training):
+    def forward_batch(self, x, y, training, log_attention=False):
         """
           Params:
             x:  list of BS tensors, each of size L* x N, where L* varies
@@ -118,7 +118,7 @@ class Trainer():
         # mask: (BS, RAL)
 
         # get prediction from the speller
-        pred = self.speller(key, val, y, mask)
+        pred = self.speller(key, val, y, mask, log_attention=log_attention)
         pred = pred.permute(0, 2, 1)
         # pred: (BS, VOC, LAL)
 
@@ -234,7 +234,8 @@ class Trainer():
 
             for idx, (batch_data, batch_label) in enumerate(self.train_loader):
 
-                loss += self.forward_batch(batch_data, batch_label, training=True)
+                la = (idx % 50 == 0)
+                loss += self.forward_batch(batch_data, batch_label, training=True, log_attention=la)
                 cur_loss = loss / (idx+1)
 
                 print('\r[TRAIN] Epoch {:02}  Batch {:03}/{:03}  Loss {:7.3f}  Perplexity {:7.3f}'.format(

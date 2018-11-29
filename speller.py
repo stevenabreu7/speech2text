@@ -55,7 +55,7 @@ class Speller(nn.Module):
         self.char_distr = nn.Linear(HFS + CS, VOC)
         self.softmax = nn.LogSoftmax(dim=-1)
     
-    def forward(self, key, val, y, mask, tfr=0.9, pred_mode=False):
+    def forward(self, key, val, y, mask, tfr=0.9, pred_mode=False, log_attention=False):
         """
           Parameters:
             key:    size (BS, RAL, CS)
@@ -156,11 +156,12 @@ class Speller(nn.Module):
         
         # attention plot
         # ATTENTION STUFF
-        attention = torch.stack(self.attender._attention)
-        self.attender._attention = []
-        attention = attention.detach().cpu().numpy().transpose()
-        plt.imshow(attention)
-        plt.savefig('attention/attention_{}'.format(int(time.time())))
+        if log_attention:
+            attention = torch.stack(self.attender._attention)
+            self.attender._attention = []
+            attention = attention.detach().cpu().numpy().transpose()
+            plt.imshow(attention)
+            plt.savefig('attention/attention_{}'.format(int(time.time())))
 
         # free up GPU?
         context = context.cpu()
