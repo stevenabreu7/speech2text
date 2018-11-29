@@ -1,66 +1,71 @@
-import torch
 import numpy as np
-import pickle as pkl
 
-def save_obj(obj, name ):
-    with open(name + '.pkl', 'wb') as f:
-        pkl.dump(obj, f, pkl.HIGHEST_PROTOCOL)
+devy = np.load('data/dev_transcripts_raw.npy', encoding='bytes')
+trainy = np.load('data/train_transcripts_raw.npy', encoding='bytes')
 
-def load_obj(name ):
-    with open(name + '.pkl', 'rb') as f:
-        return pkl.load(f)
-
-trainy = np.load('data/dev_transcripts_raw.npy', encoding='bytes')
-
-# create lists of all characters and words in the data
-syms = []
-vocab = []
+# create list of all characters
+chars = []
 for idx, label in enumerate(trainy):
-    if idx % 100 == 0:
-        print(idx, end='\r')
     for word in label:
-        if word not in vocab:
-            vocab.append(word)
-            for ch in word:
-                if ch not in syms:
-                    syms.append(ch)
-print()
+        for ch in word:
+            if ch not in chars:
+                chars.append(ch)
 
-# save words
-words = []
-for idx, label in enumerate(trainy):
-    if idx % 100 == 0:
-        print(idx, end='\r')
-    lbl = []
+for idx, label in enumerate(devy):
     for word in label:
-        lbl.append(vocab.index(word))
-    words.append(np.array(lbl))
-print()
-words = np.array(words)
+        for ch in word:
+            if ch not in chars:
+                chars.append(ch)
 
+# add the following special characters
+chars.append(' ')
+chars.append('<sos>')
+chars.append('<eos>')
 
-# save letters
-letters = []
+# log
+print('All characters:', chars)
+print('Number of characters:', len(chars))
+
+# create dictionary for quick mapping
+char_to_num = {ch : i for i, ch in enumerate(chars)}
+
+# reverse map
+num_to_char = {i : ch for i, ch in enumerate(chars)}
+
+# char to num
+print('char to num', char_to_num)
+
+# num to char
+print('num to char', num_to_char)
+
+# convert data to letters
+trainy_letters = []
 for idx, label in enumerate(trainy):
-    # d = {' ': 31, '<sos>': 32, '<eos>': 33}
-    if idx % 100 == 0:
-        print(idx, end='\r')
-    lbl = [32]
+    line = []
+    line.append(char_to_num['<sos>'])
     for word in label:
         for letter in word:
-            lbl.append(syms.index(letter))
-        lbl.append(31)
-    lbl.append(33)
-    letters.append(np.array(lbl))
-print()
-letters = np.array(letters)
+            line.append(char_to_num[letter])
+        line.append(char_to_num[' '])
+    line.append(char_to_num['<eos>'])
+    trainy_letters.append(line)
 
-# save the data as words and letters
-np.save('data/dev_transcripts_w.npy', words)
-np.save('data/dev_transcripts_l.npy', letters)
+# convert data to letters
+devy_letters = []
+for idx, label in enumerate(devy):
+    line = []
+    line.append(char_to_num['<sos>'])
+    for word in label:
+        for letter in word:
+            line.append(char_to_num[letter])
+        line.append(char_to_num[' '])
+    line.append(char_to_num['<eos>'])
+    devy_letters.append(line)
 
-# save the dictionaries to lookup words and letters
-d_syms = {i : x for i, x in enumerate(syms)}
-d_vocab = {i : x for i, x in enumerate(vocab)}
-save_obj(d_syms, 'data/dev_syms')
-save_obj(d_vocab, 'data/dev_vocab')
+# convert to numpy
+devy_letters = np.array(devy_letters)
+trainy_letters = np.array(trainy_letters)
+
+# save the data as letters
+np.save('data/dev_transcripts_l.npy', devy_letters)
+np.save('data/train_transcripts_l.npy', trainy_letters)

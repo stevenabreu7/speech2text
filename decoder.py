@@ -1,22 +1,8 @@
-import pickle as pkl
-
-ts = pkl.load(open('data/train_syms.pkl', 'rb'))
-ds = pkl.load(open('data/dev_syms.pkl', 'rb'))
+char_to_num = {84: 0, 72: 1, 69: 2, 70: 3, 77: 4, 65: 5, 76: 6, 80: 7, 82: 8, 79: 9, 68: 10, 85: 11, 67: 12, 83: 13, 73: 14, 87: 15, 89: 16, 78: 17, 71: 18, 86: 19, 66: 20, 75: 21, 81: 22, 88: 23, 74: 24, 90: 25, 45: 26, 39: 27, 46: 28, 95: 29, 43: 30, ' ': 31, '<sos>': 32, '<eos>': 33}
+num_to_char = {0: 84, 1: 72, 2: 69, 3: 70, 4: 77, 5: 65, 6: 76, 7: 80, 8: 82, 9: 79, 10: 68, 11: 85, 12: 67, 13: 83, 14: 73, 15: 87, 16: 89, 17: 78, 18: 71, 19: 86, 20: 66, 21: 75, 22: 81, 23: 88, 24: 74, 25: 90, 26: 45, 27: 39, 28: 46, 29: 95, 30: 43, 31: ' ', 32: '<sos>', 33: '<eos>'}
 
 def decode_train(s):
     res = ''
     for ch in s:
-        if ch == 32:
-            res += '<sos>'
-        elif ch == 31:
-            res += '-'
-        elif ch == 33:
-            res += '<eos>'
-        else:
-            res += chr(ts[ch])
+        res += chr(num_to_char[ch])
     return res
-
-# # logging
-# print(decode_train(y[0].numpy()))
-# p = torch.argmax(pred[0], dim=0)
-# print(decode_train(p.numpy()))
