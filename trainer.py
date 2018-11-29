@@ -258,7 +258,7 @@ class Trainer():
         if self.use_gpu:
             mask = mask.cuda()
 
-        pred = self.speller(key, val, None, mask)
+        pred = self.speller(key, val, None, mask, pred_mode=True)
         # pred: (1, LAL, VOC)
         pred = pred.squeeze(0)
         # pred: (LAL, VOC)

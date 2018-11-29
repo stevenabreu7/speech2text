@@ -114,7 +114,7 @@ class Speller(nn.Module):
             do_tf = random.random() > self.tfr or y is None
 
             # never do teacher forcing in prediction mode
-            do_tf = False if pred_mode else do_tf
+            do_tf = True if pred_mode else do_tf
 
             # getting current time target
             if do_tf and t > 0:
