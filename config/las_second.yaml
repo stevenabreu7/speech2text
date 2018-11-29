@@ -1,0 +1,15 @@
+# second try
+model_params:
+  name: 'las_second'
+  log_path: 'log'
+  model_path: 'models'
+  load_epochs: null
+  AUF: 40
+  HFL: 256
+  CS: 128
+  VOC: 34
+  HFS: 512
+  EMB: 64
+  lr: 0.001
+  tfr: 0.9
+  n: 30
