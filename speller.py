@@ -204,8 +204,8 @@ class Speller(nn.Module):
         # log attention
         if log_att:
             attentions = torch.stack(attentions)
-            attentions = attentions.detach().numpy().transpose()
-            plt.imshow(attention)
+            attentions = attentions.numpy().transpose()
+            plt.imshow(attentions)
             plt.savefig('attention/attention_{}'.format(int(time.time())))
             plt.close()
 
