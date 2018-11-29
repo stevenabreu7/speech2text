@@ -213,4 +213,4 @@ class Speller(nn.Module):
         context = context.cpu()
         del context
 
-        return pred, attentions
+        return pred
