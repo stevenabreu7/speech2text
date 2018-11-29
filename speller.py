@@ -1,20 +1,20 @@
-# ATTENTION STUFF
 import time
 import torch
 import random
 import numpy as np
 import torch.nn as nn
-from attender import Attender
-from torch.distributions.categorical import Categorical
-# ATTENTION STUFF
 import matplotlib.pyplot as plt
-
-SOS = 32
+import torch.nn.functional as F
+from torch.distributions.categorical import Categorical
+from attender import Attender
+from decoder import char_to_num
 
 
 class Speller(nn.Module):
     def __init__(self, CS, VOC, HFS, EMB, tfr):
         """
+          In this network, we iterate over the time dimension of the input
+          and thus each component only takes a single time step of data.
           Parameters:
             CS:     number of features in the context
             VOC:    number of output classes
@@ -29,53 +29,77 @@ class Speller(nn.Module):
         self.EMB = EMB
         self.tfr = tfr
         
-        # save the float type (cuda or not)
-        self.float_type = torch.torch.cuda.FloatTensor if torch.cuda.is_available() else torch.FloatTensor
-
         # embedding layer
         self.embedding = nn.Embedding(VOC, EMB)
+        # in: (BS), values in [0, VOC-1]
+        # out: (BS, EMB)
 
         # First LSTM cell
-        # in (BS, EMB+CS), hidden (BS, HFS) and cell (BS, HFS)
-        # out hidden (BS, HFS) and cell (BS, HFS)
         self.lstm_cell_a = nn.LSTMCell(EMB + CS, HFS, bias=True)
+        # in: (BS, EMB+CS)
+        #   hidden and cell: (BS, HFS)
+        # out: 
+        #   hidden and cell: (BS, HFS)
 
         # Second LSTM cell
-        # in (BS, HFS), hidden (BS, HFS) and cell (BS, HFS)
-        # out hidden (BS, HFS) and cell (BS, HFS)
         self.lstm_cell_b = nn.LSTMCell(HFS, HFS, bias=True)
+        # in: (BS, HFS)
+        #   hidden and cell: (BS, HFS)
+        # out: 
+        #   hidden and cell: (BS, HFS)
         
         # attention network
         self.attender = Attender(CS)
+        # in: 
+        #   key: (BS, RAL, CS)
+        #   val: (BS, RAL, CS)
+        #   query: (BS, CS)
+        #   mask: (BS, RAL)
+        # out: 
+        #   context: (BS, CS)
+        #   attention: (BS, RAL)
 
         # query projection
         self.query_proj = nn.Linear(HFS, CS)
+        # in: (BS, HFS)
+        # out: (BS, CS)
 
         # linear layer with softmax to get character distributions
         self.char_distr = nn.Linear(HFS + CS, VOC)
+        # in: (BS, HFS+CS)
+        # out: (BS, CS)
         self.softmax = nn.LogSoftmax(dim=-1)
-    
-    def forward(self, key, val, y, mask, tfr=0.9, pred_mode=False, log_attention=False):
+        # in: *
+        # out: *
+
+    def forward(self, key, val, y, mask, tfr=0.9, pred_mode=False, log_att=False):
         """
+          Forward pass of the speller.
           Parameters:
-            key:    size (BS, RAL, CS)
-            val:    size (BS, RAL, CS)
-            y:      size (BS, LAL)
-            mask:   size (BS, RAL)
-            tfr:    teacher forcing rate, float
+            key:        (BS, RAL, CS)
+            val:        (BS, RAL, CS)
+            y:          (BS, LAL)
+            mask:       (BS, RAL)
+            tfr:        teacher forcing rate, float scalar
+            pred_mode:  whether or not in prediction mode
+            log_att:    whether or not to log the attention
           Returns:
-            pred:   predictions, size (BS, LAL, VOC)
+            pred:   prediction probabilities
+                    (BS, LAL, VOC)
         """
 
-        # extract dimensions
-        if y is None:
-            BS = key.size(0)
-            LAL = 250 # max transcript length in training set
-        else:
-            BS, LAL = y.size()
+        # make sure that y is only not given if we predict
+        assert (y is not None or pred_mode)
 
-        # list of LAL tensors of size (BS, VOC)
+        # save dimensions (250 is the max length)
+        BS = key.size(0)
+        LAL = 250 if y is None else y.size(1)
+
+        # store our predictions
         pred = []
+
+        # store the attention
+        attentions = []
 
         # initial values for LSTM cell states and context
         state_a = None
@@ -83,91 +107,110 @@ class Speller(nn.Module):
         context = None
         y_next = None
 
-        # we now iterate through time in order to make our 
-        # predictions, using the LSTMCells
+        # we now iterate through time in order to make our predictions
         for t in range(0, LAL):
-            do_tf = random.random() > self.tfr or y is None
-            if pred_mode:
-                do_tf = False
 
+            # decide if we do teacher forcing
+            do_tf = random.random() > self.tfr or y is None
+
+            # never do teacher forcing in prediction mode
+            do_tf = False if pred_mode else do_tf
+
+            # getting current time target
             if do_tf and t > 0:
                 # initialize time target to last generated value
+                y_next = F.softmax(y_next, dim=1)
                 # y_next: (BS, VOC)
-                y_next = self.softmax(y_next)
+
+                # sample current y from last prediction
                 y_t = Categorical(y_next).sample()
-                # y_t: (BS), values in [0, VOC-1]
+                # y_t: (BS) - values in [0, VOC-1]
+
             elif do_tf and t == 0:
-                # feed it the start of sentence symbol (SOS)
-                y_t = np.array([SOS] * BS)
+                # feed it the start of sentence symbol <sos>
+                sos_symbol = char_to_num['<sos>']
+                y_t = np.array([sos_symbol] * BS)
                 y_t = torch.Tensor(y_t)
+                # y_t: (BS) - values in [0, VOC-1]
+
             else:
                 # initialize time target to target value 
-                # tensor of size (BS), values in [0, VOC-1]
                 y_t = y[:, t]
+                # y_t: (BS) - values in [0, VOC-1]
             
             # ensure right type for y_t
             y_t = y_t.type(torch.LongTensor)
             if torch.cuda.is_available():
                 y_t = y_t.cuda()
 
-            # get embedding, (BS, EMB)
             embedding = self.embedding(y_t)
+            # embedding: (BS, EMB)
 
-            # create context bc it doesn't exist, move to GPU if possible
-            # size (BS, CS)
+            # create context if it doesn't exist
             if context is None:
                 context = torch.zeros((BS, self.CS))
                 context = context.cuda() if torch.cuda.is_available() else context
+            # context: (BS, CS)
 
-            # (BS, EMB) cat (BS, CS) = (BS, EMB+CS)
+            # (BS, EMB) ++ (BS, CS) 
             lstm_in = torch.cat([embedding, context], dim=1)
+            # lstm_in: (BS, EMB+CS)
 
             # run through the first cell
-            # hidden and cell state are (BS, HFS)
             hidden_a, cell_a = self.lstm_cell_a(lstm_in, state_a)
+            # hidden_a: (BS, HFS)
+            # cell_a: (BS, HFS)
 
             # pass previous hidden state to this as input
-            # hidden and cell state are (BS, HFS)
             hidden_b, cell_b = self.lstm_cell_b(hidden_a, state_b)
+            # hidden_b: (BS, HFS)
+            # cell_b: (BS, HFS)
 
-            # compute query from the hidden state of the second 
-            # LSTM cell - the output of the RNN at this time step
-            # size (BS, CS)
+            # hidden_b is the output of the RNN at this time
+            # compute query from this
             query = self.query_proj(hidden_b)
+            # query: (BS, CS)
 
-            # compute the context using the attention network
-            # size (BS, CS)
-            context = self.attender(key, val, query, mask)
+            # compute context and attention using the attender
+            context, attention = self.attender(key, val, query, mask)
+            # context: (BS, CS)
 
-            # concatenate to get the output
-            # (BS, HFS) cat (BS, CS)
-            # size (BS, HFS+CS)
+            # save attention for first item only
+            if log_att:
+                att = attention.clone()
+                attentions.append(att[0].cpu())
+
+            # (BS, HFS) ++ (BS, CS)
             lstm_output = torch.cat([hidden_b, context], dim=1)
+            # lstm_output: (BS, HFS+CS)
 
-            # predict next y, size (BS, VOC)
+            # predictions for the next y
             y_next = self.char_distr(lstm_output)
+            # y_next: (BS, VOC)
 
-            # save the cell states
+            # save the cell states for next iteration
             state_a = (hidden_a, cell_a)
             state_b = (hidden_b, cell_b)
+            # state_a: (BS, HFS), (BS, HFS)
+            # state_b: (BS, HFS), (BS, HFS)
 
             # append the prediction to our list
             pred.append(y_next)
         
-        # attention plot
-        # ATTENTION STUFF
-        if log_attention:
-            attention = torch.stack(self.attender._attention)
-            attention = attention.numpy().transpose()
+        # make pred a tensor
+        pred = torch.stack(pred, dim=1)
+        # pred: (BS, LAL, VOC)
+
+        # log attention
+        if log_att:
+            attentions = torch.stack(attentions)
+            attentions = attentions.numpy().transpose()
             plt.imshow(attention)
             plt.savefig('attention/attention_{}'.format(int(time.time())))
-        self.attender._attention = []
+            plt.close()
 
-        # free up GPU?
+        # delete the context
         context = context.cpu()
         del context
 
-        # make pred a tensor of size (BS, LAL, VOC)
-        pred = torch.stack(pred, dim=1)
-
-        return pred
+        return pred, attentions

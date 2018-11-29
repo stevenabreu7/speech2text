@@ -9,43 +9,65 @@ import torch.nn.utils.rnn as rnn
 import torch.nn.functional as func
 from torch.autograd import Variable
 from torch.distributions.categorical import Categorical
+from decoder import char_to_num
 from decoder import decode_train
 from speller import Speller
 from listener import Listener
 from wsj_loader import val_loader, train_loader
 
 
-EOS = 33
-
-
 class Trainer():
     def __init__(self, name, log_path, model_path, AUF, HFL, CS, VOC, HFS, EMB, lr, n, tfr, load_epochs):
+        """
+          This Trainer class contains everything that has to do with training 
+          the LAS model and making predictions. Arguments are passed from a 
+          yaml configuration file.
+          Params:
+            name                            name of this model
+            log_path                        directory where logs are stored
+            model_path                      directory where models are stored
+            AUF, HFL, CS, VOC, HFS, EMB     dimensions in the network
+            lr                              learning rate
+            n                               number of epochs to train
+            tfr                             teacher forcing rate
+            load_epochs                     if pretraining, this indicates the number 
+                                            of epochs for which the model was pretrained
+        """
         print('\rSetting up trainer...', end='', flush=True)
+        # meta parameters
         self.name = name
         self.log_path = log_path
         self.model_path = model_path
 
+        # training parameters
         self.tfr = tfr
         self.n_epochs = n
 
+        # gpu availability
         self.use_gpu = torch.cuda.is_available()
 
+        # data loaders
         self.val_loader = val_loader()
         self.train_loader = train_loader()
 
+        # networks
         self.speller = Speller(CS, VOC, HFS, EMB, tfr)
         self.listener = Listener(AUF, HFL, CS)
 
+        # optimizer for learning
         params = [{'params': self.speller.parameters()}, {'params': self.listener.parameters()}]
         self.optimizer = torch.optim.Adam(params, lr)
 
+        # loss criterion
         self.criterion = nn.CrossEntropyLoss()
 
+        # move to GPU if possible
         if self.use_gpu:
             self.speller = self.speller.cuda()
             self.listener = self.listener.cuda()
             self.criterion = self.criterion.cuda()
         
+        # use pretrained model if so indicated
         if load_epochs is not None:
             self.load(load_epochs)
             self.epoch_i = load_epochs
@@ -55,10 +77,9 @@ class Trainer():
     def forward_batch(self, x, y, training, log_attention=False):
         """
           Params:
-            x:  list of BS tensors, each of size L* x N, where L* varies
-            y:  list of BS tensors, each of size T*, where T* varies
-            training:
-                boolean of whether or not we're training (for backward pass)
+            x:          [BS] tensors, each (L*, N), where L* varies
+            y:          [BS] tensors, each (T*), where T* varies
+            training:   boolean of whether or not we're training
         """
         if training:
             self.speller.train()
@@ -67,7 +88,9 @@ class Trainer():
             self.speller.eval()
             self.listener.eval()
 
-        batch_size = len(x)
+        # save the batch size
+        BS = len(x)
+
         #####################
         # 1) Preprocessing
 
@@ -75,13 +98,14 @@ class Trainer():
         z = zip(*sorted(zip(x, y), key=lambda a: a[1].shape[0], reverse=True))
         x, y = (list(l) for l in z)
 
-        # saving length of x and y
+        # saving lengths of x and y tensors
         x_lens = [e.size(0) for e in x]
         y_lens = [e.size(0) for e in y]
 
         # pad x and y
         x = rnn.pad_sequence(x, batch_first=True, padding_value=0)
-        y = rnn.pad_sequence(y, batch_first=True, padding_value=EOS)
+        eos_sym = char_to_num['<eos>']
+        y = rnn.pad_sequence(y, batch_first=True, padding_value=eos_sym)
         # make sure x's length is divisible by eight
         if x.size(1) % 8 != 0:
             pad_len = (x.size(1) // 8 + 1) * 8 - x.size(1)
@@ -92,7 +116,7 @@ class Trainer():
         #####################
         # 2) Forward pass
 
-        # prepare x and y
+        # save x and y as variables on GPU (if possible)
         x = Variable(x)
         y = Variable(y, requires_grad=False)
         x = x.cuda() if self.use_gpu else x
@@ -122,19 +146,22 @@ class Trainer():
         pred = pred.permute(0, 2, 1)
         # pred: (BS, VOC, LAL)
 
-        # prepare real prediction
+        # prepare target
         y = y.data.contiguous().type(torch.LongTensor)
         y = y.cuda() if self.use_gpu else y
-        # y: (BS, LAL)  - packed, padded
+        # y: (BS, LAL) - padded
 
-        # compute the loss
+        # compute the loss (manually iterate because of padding)
         loss = 0.0
-        for idx in range(batch_size):
+        for idx in range(BS):
             t = y[idx, :y_lens[idx]]
             t = t.unsqueeze(0)
+            # t: (1, LAL*)
             p = pred[idx, :, :y_lens[idx]]
             p = p.unsqueeze(0)
-            loss += self.criterion(p, t) / float(batch_size)
+            # p: (1, LAL*)
+            loss += self.criterion(p, t)
+        loss = loss / float(BS)
 
         #####################
         # 3) Backward pass
@@ -196,30 +223,31 @@ class Trainer():
         for idx in range(len(samples)):
             if 33 in list(samples[idx]):
                 samples[idx] = samples[idx][:list(samples[idx]).index(33)+1]
-            # samples[idx] = samples[idx].numpy()
-            # samples[idx] = decode_train(samples[idx])
         # samples: [n] x (variable_length)
 
         losses = []
         for idx in range(len(samples)):
             y = samples[idx]
             y = y.unsqueeze(0)
+            y = y.cuda() if self.use_gpu else y
             # y: (1, YLEN)
-            # y: (YLEN)
-            if self.use_gpu:
-                y = y.cuda()
+            
             pred = self.speller(key, val, y, mask, pred_mode=True)
             pred = pred.permute(0, 2, 1)
             # pred: (1, VOC, LAL)
+
             y_len = y.size(1)
             pred = pred[:, :, :y_len]
             # pred: (1, VOC, YLEN)
             losses.append(self.criterion(pred, y).cpu().item())
         
+        # find minimum loss
         idx = losses.index(min(losses))
-
+        
+        # sample with minimum loss
         res = samples[idx]
 
+        # print the prediction as decoded string
         print(decode_train(res.cpu().numpy()))
 
         return res
@@ -267,7 +295,7 @@ class Trainer():
                 'Loss {:7.3f} Perplexity {:7.3f}'.format(loss/n_batches, 2**(loss/n_batches))
             )
 
-            # SAVE
+            # SAVE MODEL
             self.save(self.epoch_i+1)
 
             self.epoch_i += 1

@@ -6,37 +6,42 @@ class pBLSTMLayer(nn.Module):
         """
           AUF:  number of features for each time step
           HFL:  number of hidden units in the LSTM 
-                output of LSTM will have 2*HFL features because 
-                it's a bidirectional LSTM
         """
         super(pBLSTMLayer, self).__init__()
         # bidirectional LSTM with one layer
         self.blstm = nn.LSTM(AUF*2, HFL, 1, bidirectional=True, batch_first=True)
+        # in: (BS, X, 2*AUF)
+        # out: (BS, X/2, 2*HFL)
 
     def forward(self, x, true_lens):
         """
           Forward pass through the pBLSTM layer. Pooling done before forward pass.
-          Assumptions:
-            We assume that the input tensor is of a length divisible by two.
           Params:
-            x:          input tensor of size (BS, AUL, AUF)
-            true_lens:  list of length BS with true length of each tensor in batch
-          Resized input size:
-            (BS, AUL/2, 2*AUF)
+            x:          (BS, AUL, AUF)
+            true_lens:  true length of each tensor in batch
+                        [BS]
           Returns: 
-            x:          output tensor of size (BS, AUL/2, 2*HFL)
-            true_lens:  list of length BS with updated lengths of each tensor in batch
+            x:          (BS, AUL/2, 2*HFL)
+            true_lens:  updated lengths of each tensor in batch
+                        [BS]
         """
-        # extract the dimensions
         BS, AUL, AUF = x.size()
-        # make sure input tensor length is divisible by two
-        assert AUL % 2 == 0
+        # x: (BS, AUL, AUF)
+        
+        if AUL % 2 == 1:
+            print('Warning: length of x not divisible by 2 (Listener)')
+        
         # resize the input vector according to the pooling
         x = x.contiguous().view(BS, AUL // 2, 2*AUF)
+        # x: (BS, AUL/2, 2*AUF)
+        
         # update the true lengths
         true_lens = [e // 2 for e in true_lens]
+        
         # bidirectional lstm
         x, _ = self.blstm(x)
+        # x: (BS, AUL/2, 2*HFL)
+        
         return x, true_lens
 
 
@@ -52,16 +57,20 @@ class Listener(nn.Module):
         super(Listener, self).__init__()
         # base BLSTM before the pyramidal BLSTMs
         self.base_blstm = nn.LSTM(AUF, HFL, bidirectional=True, batch_first=True)
+
         # pyramidal bidirectional LSTMs
         self.pyramidalBLSTM = nn.ModuleList()
         for _ in range(n_lay):
-            # since it's bidirectional, it takes 2H features and returns 2H features
-            # i.e. doesn't change number of features
             layer = pBLSTMLayer(2 * HFL, HFL)
             self.pyramidalBLSTM.append(layer)
+            # in: (BS, X, 2*HFL)
+            # out: (BS, X/2, 2*HFL)
+        
         # two MLPs to get the attention key and value
         self.key_mlp = nn.Linear(2 * HFL, CS)
         self.val_mlp = nn.Linear(2 * HFL, CS)
+        # in: (BS, 2*HFL)
+        # out: (BS, CS)
     
     def forward(self, x, true_lens):
         """
@@ -74,26 +83,33 @@ class Listener(nn.Module):
           It outputs the listener features as a key and a value, each 
           of dimensions (BS, RAL, CS) (through an MLP).
           Params:
-            x:          Tensor of size (BS, AUL, AUF)
-            true_lens:  list of length BS, keeping track of the true length
+            x:          (BS, AUL, AUF)
+            true_lens:  list keeping track of the true length
                         of each input in the tensor x
+                        [BS]
           Intermediate values:
-            x:          Listener features, tensor of size (BS, RAL, 2*HFL)
+            x:          Listener features
+                        (BS, RAL, 2*HFL)
           Returns:
-            key:        Tensor of size (BS, RAL, CS)
-            val:        Tensor of size (BS, RAL, CS)
-            true_lens:  list of length BS, keeping track of the new true
+            key:        (BS, RAL, CS)
+            val:        (BS, RAL, CS)
+            true_lens:  keeping track of the new true
                         length of each tensor in the batch.
+                        [BS]
         """
-        # x is of size BS x AUL x AUF, true_lens doesn't change
-        x, _ = self.base_blstm(x)        
-        # x is of size B x AUL x 2*HFL
+        # x: (BS, AUL, AUF)
+        x, _ = self.base_blstm(x)     
+        # x: (BS, AUL, 2*HFL)
+        
+        # each iteration halves the length of the tensor
         for layer in self.pyramidalBLSTM:
-            # each iteration halves the length of the tensor
             x, true_lens = layer(x, true_lens)
-        # x is now of size BS x RAL x 2*HFL
+        # x: (BS, RAL, 2*HFL)
+        
         # get the key and value through MLPs
-        # in BS x RAL x 2*HFL -> out BS x RAL x CS
         key = self.key_mlp(x)
         val = self.val_mlp(x)
+        # key: (BS, RAL, CS)
+        # val: (BS, RAL, CS)
+
         return key, val, true_lens
