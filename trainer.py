@@ -60,6 +60,13 @@ class Trainer():
             training:
                 boolean of whether or not we're training (for backward pass)
         """
+        if training:
+            self.speller.train()
+            self.listener.train()
+        else:
+            self.speller.eval()
+            self.listener.eval()
+
         batch_size = len(x)
         #####################
         # 1) Preprocessing
@@ -295,8 +302,8 @@ class Trainer():
         assert os.path.exists(speller_path), 'Speller path doesnt exist'
         assert os.path.exists(listener_path), 'Listener path doesnt exist'
         # load the state dictionaries into the models
-        self.speller.load_state_dict(torch.load(speller_path))
-        self.listener.load_state_dict(torch.load(listener_path))
+        self.speller.load_state_dict(torch.load(speller_path, map_location='cpu'))
+        self.listener.load_state_dict(torch.load(listener_path, map_location='cpu'))
 
 
 if __name__ == '__main__':
@@ -306,6 +313,8 @@ if __name__ == '__main__':
 
     conf = yaml.load(open(args.config, 'r'))
     trainer = Trainer(**conf['model_params'])
+
+    trainer.train()
 
     x = np.load('data/test.npy', encoding='bytes')[0]
     x = torch.Tensor(x)
