@@ -303,8 +303,12 @@ class Trainer():
         assert os.path.exists(speller_path), 'Speller path doesnt exist'
         assert os.path.exists(listener_path), 'Listener path doesnt exist'
         # load the state dictionaries into the models
-        self.speller.load_state_dict(torch.load(speller_path, map_location='cpu'))
-        self.listener.load_state_dict(torch.load(listener_path, map_location='cpu'))
+        if self.use_gpu:
+            self.speller.load_state_dict(torch.load(speller_path))
+            self.listener.load_state_dict(torch.load(listener_path))
+        else:
+            self.speller.load_state_dict(torch.load(speller_path, map_location='cpu'))
+            self.listener.load_state_dict(torch.load(listener_path, map_location='cpu'))
 
 
 if __name__ == '__main__':
