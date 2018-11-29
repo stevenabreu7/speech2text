@@ -59,7 +59,7 @@ class Trainer():
         self.optimizer = torch.optim.Adam(params, lr)
 
         # loss criterion
-        self.criterion = nn.CrossEntropyLoss()
+        self.criterion = nn.CrossEntropyLoss(reduction='none')
 
         # move to GPU if possible
         if self.use_gpu:
@@ -73,6 +73,59 @@ class Trainer():
             self.epoch_i = load_epochs
         else:
             self.epoch_i = 0
+        
+    def preprocess_input(self, x, y):
+        """
+          Preprocess the batch input.
+          Params:   
+            x:      data
+                    [BS] (AUL*, AUF)
+            y:      labels
+                    [BS] (LAL*)
+          Returns:
+            x:      data
+                    (BS, AUL, AUF)
+            y:      labels
+                    (BS, LAL)
+            x_lens: true length of each tensor in x
+                    [BS]
+            y_lens: true length of each tensor in y
+                    [BS]
+        """
+        # get the <eos> symbol code
+        eos_sym = char_to_num['<eos>']
+
+        # sorting data jointly by length of x
+        z = zip(*sorted(zip(x, y), key=lambda a: a[1].shape[0], reverse=True))
+        x, y = (list(l) for l in z)
+
+        # saving lengths of x and y tensors
+        x_lens = [e.size(0) for e in x]
+        y_lens = [e.size(0) for e in y]
+
+        # pad x and y
+        x = rnn.pad_sequence(x, batch_first=True, padding_value=0)
+        y = rnn.pad_sequence(y, batch_first=True, padding_value=eos_sym)
+        # make sure x's length is divisible by eight
+        if x.size(1) % 8 != 0:
+            pad_len = (x.size(1) // 8 + 1) * 8 - x.size(1)
+            x = func.pad(x, (0, 0, 0, pad_len))
+        # x: (BS, AUL, AUF) - padded
+        # y: (BS, LAL)      - padded
+
+        # turn into variables
+        x = Variable(x)
+        y = Variable(y, requires_grad=False)
+        # x: (BS, AUL, AUF) - Variable, padded
+        # y: (BS, LAL)      - Variable, padded
+
+        # move to GPU if possible
+        x = x.cuda() if self.use_gpu else x
+        y = y.cuda() if self.use_gpu else y
+        # x: (BS, AUL, AUF) - Variable, padded
+        # y: (BS, LAL)      - Variable, padded
+
+        return x, y, x_lens, y_lens
 
     def forward_batch(self, x, y, training, log_att=False):
         """
@@ -87,62 +140,30 @@ class Trainer():
         else:
             self.speller.eval()
             self.listener.eval()
-
-        # save the batch size
-        BS = len(x)
-
-        #####################
-        # 1) Preprocessing
-
-        # sorting data jointly by length of x
-        z = zip(*sorted(zip(x, y), key=lambda a: a[1].shape[0], reverse=True))
-        x, y = (list(l) for l in z)
-
-        # saving lengths of x and y tensors
-        x_lens = [e.size(0) for e in x]
-        y_lens = [e.size(0) for e in y]
-
-        # pad x and y
-        x = rnn.pad_sequence(x, batch_first=True, padding_value=0)
-        eos_sym = char_to_num['<eos>']
-        y = rnn.pad_sequence(y, batch_first=True, padding_value=eos_sym)
-        # make sure x's length is divisible by eight
-        if x.size(1) % 8 != 0:
-            pad_len = (x.size(1) // 8 + 1) * 8 - x.size(1)
-            x = func.pad(x, (0, 0, 0, pad_len))
-        # x: (BS, AUL, AUF)
-        # y: (BS, LAL)
-
-        #####################
-        # 2) Forward pass
-
-        # save x and y as variables on GPU (if possible)
-        x = Variable(x)
-        y = Variable(y, requires_grad=False)
-        x = x.cuda() if self.use_gpu else x
-        y = y.cuda() if self.use_gpu else y
+        
+        # preprocess the input
+        x, y, x_lens, y_lens = self.preprocess_input(x, y)
         # x: (BS, AUL, AUF) - Variable, padded
-        # y: (BS, LAL)      - Variable, padded
-
-        # zero gradients
-        self.optimizer.zero_grad()
+        # y: (BS, LAL) - Variable, padded
+        # x_lens: [BS] true length of x
+        # y_lens: [BS] true length of y
 
         # pass x through the listener
-        key, val, true_lens = self.listener(x, x_lens)
+        key, val, kv_lens = self.listener(x, x_lens)
         # key: (BS, RAL, CS)
         # val: (BS, RAL, CS)
-        # true_lens: [BS], true length of key and val
+        # kv_lens: [BS], true length of key and val
 
-        # make the mask
-        mask = torch.zeros((key.size(0), key.size(1)))
-        mask = mask.type(torch.FloatTensor)
-        mask = mask.cuda() if self.use_gpu else mask
-        for batch_idx, max_time in enumerate(true_lens):
-            mask[batch_idx, :max_time] = 1
+        # make the mask for the speller
+        speller_mask = torch.zeros((key.size(0), key.size(1)))
+        speller_mask = speller_mask.type(torch.FloatTensor)
+        speller_mask = speller_mask.cuda() if self.use_gpu else speller_mask
+        for batch_idx, max_time in enumerate(kv_lens):
+            speller_mask[batch_idx, :max_time] = 1
         # mask: (BS, RAL)
 
         # get prediction from the speller
-        pred = self.speller(key, val, y, mask, log_att=log_att)
+        pred = self.speller(key, val, y, speller_mask, log_att=log_att)
         pred = pred.permute(0, 2, 1)
         # pred: (BS, VOC, LAL)
 
@@ -151,26 +172,58 @@ class Trainer():
         y = y.cuda() if self.use_gpu else y
         # y: (BS, LAL) - padded
 
-        # compute the loss (manually iterate because of padding)
-        loss = 0.0
-        for idx in range(BS):
-            t = y[idx, :y_lens[idx]]
-            t = t.unsqueeze(0)
-            # t: (1, LAL*)
-            p = pred[idx, :, :y_lens[idx]]
-            p = p.unsqueeze(0)
-            # p: (1, LAL*)
-            loss += self.criterion(p, t)
-        loss = loss / float(BS)
+        # get dimensions
+        BS, LAL = y.size()
+
+        # prepare mask for loss computation
+        loss_mask = torch.zeros((BS, LAL))
+        loss_mask = loss_mask.type(torch.FloatTensor)
+        loss_mask = loss_mask.cuda() if self.use_gpu else loss_mask
+        for batch_idx, max_time in enumerate(y_lens):
+            loss_mask[batch_idx, :max_time] = 1
+        # mask: (BS, LAL)
+
+        # reshape tensors for loss computation
+        loss_mask = loss_mask.contiguous().view(BS*LAL)
+        pred = pred.contiguous().view(BS*LAL, -1)
+        y = y.contiguous().view(BS*LAL)
+        # loss_mask: (BS*LAL)
+        # pred: (BS*LAL, VOC)
+        # y: (BS*LAL)
+
+        # compute the loss
+        loss = self.criterion(pred, y)
+        # loss: (BS*LAL)
+
+        # mask the loss
+        loss = loss * loss_mask
+        # loss: (BS*LAL)
+
+        # loss for logging purposes
+        log_loss = loss.sum().item() / loss_mask.sum().item()
+        # log_loss: scalar
+
+        # reconstruct original size
+        loss = loss.view(BS, LAL)
+        # loss: (BS, LAL)
+
+        # sum over the loss
+        loss = loss.sum(dim=1)
+        # loss: (BS)
+
+        # compute the mean over the batch
+        loss = loss.mean()
+        # loss: scalar
 
         #####################
         # 3) Backward pass
 
         if training:
+            self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
 
-        return loss.cpu().item()
+        return log_loss
     
     def generate_single(self, x, n):
         """
