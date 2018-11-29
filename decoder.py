@@ -4,5 +4,9 @@ num_to_char = {0: 84, 1: 72, 2: 69, 3: 70, 4: 77, 5: 65, 6: 76, 7: 80, 8: 82, 9:
 def decode_train(s):
     res = ''
     for ch in s:
-        res += chr(num_to_char[ch])
+        a = num_to_char[ch]
+        if type(a) == str:
+            res += a
+        else:
+            res += chr(a)
     return res
