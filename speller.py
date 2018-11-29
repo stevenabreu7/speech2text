@@ -158,10 +158,10 @@ class Speller(nn.Module):
         # ATTENTION STUFF
         if log_attention:
             attention = torch.stack(self.attender._attention)
-            self.attender._attention = []
             attention = attention.detach().cpu().numpy().transpose()
             plt.imshow(attention)
             plt.savefig('attention/attention_{}'.format(int(time.time())))
+        self.attender._attention = []
 
         # free up GPU?
         context = context.cpu()
