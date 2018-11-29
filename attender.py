@@ -39,7 +39,7 @@ class Attender(nn.Module):
         # TODO does this work without masking it?
         attention = F.softmax(energy, dim=1)
         # ATTENTION STUFF
-        self._attention.append(attention[0].clone().detach().cpu()))
+        self._attention.append(attention[0].clone().detach().cpu())
 
         # make sure mask is correct type
         mask = mask.type(torch.FloatTensor)
