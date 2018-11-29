@@ -1,10 +1,13 @@
+# ATTENTION STUFF
+import time
 import torch
 import random
 import numpy as np
 import torch.nn as nn
 from attender import Attender
 from torch.distributions.categorical import Categorical
-
+# ATTENTION STUFF
+import matplotlib.pyplot as plt
 
 SOS = 32
 
@@ -151,6 +154,14 @@ class Speller(nn.Module):
             # append the prediction to our list
             pred.append(y_next)
         
+        # attention plot
+        # ATTENTION STUFF
+        attention = torch.stack(self.attender._attention)
+        self.attender._attention = []
+        attention = attention.detach().cpu().numpy().transpose()
+        plt.imshow(attention)
+        plt.savefig('attention/attention_{}'.format(int(time.time())))
+
         # free up GPU?
         context = context.cpu()
         del context

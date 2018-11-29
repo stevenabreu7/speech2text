@@ -11,6 +11,8 @@ class Attender(nn.Module):
         """
         super(Attender, self).__init__()
         self.CS = CS
+        # ATTENTION STUFF
+        self._attention = []
 
     def forward(self, key, val, query, mask):
         """
@@ -36,6 +38,8 @@ class Attender(nn.Module):
         # attention is of size (BS, RAL)
         # TODO does this work without masking it?
         attention = F.softmax(energy, dim=1)
+        # ATTENTION STUFF
+        self._attention.append(attention[0])
 
         # make sure mask is correct type
         mask = mask.type(torch.FloatTensor)
